@@ -11,8 +11,8 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
 test('release metadata is explicit and production files include hardening modules', async () => {
   const pkg = JSON.parse(await fs.readFile(path.join(ROOT, 'package.json'), 'utf8'));
-  assert.equal(pkg.name, 'agyc');
-  assert.equal(pkg.version, '0.1.0');
+  assert.equal(pkg.name, 'antigyc');
+  assert.equal(pkg.version, '0.1.1');
   assert.equal(pkg.license, 'MIT');
   assert.equal(pkg.publishConfig.access, 'public');
   assert.equal(pkg.repository.url, 'git+https://github.com/Jervis-UMTC/antigravity-cli-npm.git');
@@ -20,14 +20,14 @@ test('release metadata is explicit and production files include hardening module
   assert.equal(pkg.homepage, 'https://github.com/Jervis-UMTC/antigravity-cli-npm#readme');
   assert.match(pkg.scripts['release:check'], /npm publish --dry-run --ignore-scripts --json/);
   assert.equal(pkg.scripts.postinstall, 'node scripts/postinstall.js');
-  assert.equal(pkg.bin.agyc, 'bin/agy.js');
+  assert.equal(pkg.bin.antigyc, 'bin/agy.js');
   assert.equal(pkg.bin['antigravity-cli-npm'], undefined);
   assert.equal(pkg.bin.agy, undefined);
   assert.equal(pkg.bin.antigravity, undefined);
   assert.equal(pkg.dependencies.fflate, '0.8.3');
   assert.equal(pkg.dependencies['@lydell/node-pty'], '1.1.0');
   assert.equal(pkg.dependencies['@google/gemini-cli'], undefined);
-  assert.ok(pkg.keywords.includes('agyc'));
+  assert.ok(pkg.keywords.includes('antigyc'));
 
   for (const runtimeFile of ['src/agent.js', 'src/google-agent.js']) {
     const runtime = await fs.readFile(path.join(ROOT, runtimeFile), 'utf8');

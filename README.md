@@ -1,46 +1,139 @@
-# agyc
+# antigyc
 
-A coding agent that looks and behaves like a normal command prompt. The npm package and public command are both `agyc`; the GitHub repository remains `Jervis-UMTC/antigravity-cli-npm`.
+`antigyc` is an AI coding agent you run from a normal terminal. Install it once, open the folder you want it to work on, run `antigyc`, then type what you want done.
 
-`agyc` intentionally has no AI-style terminal interface: no startup banner, cards, panels, animated spinner, tool-call stream, model badge, reasoning display, assistant label, or live edit animation. Normal interactive startup is simply:
+The npm package and public command are both `antigyc`. The GitHub repository remains `Jervis-UMTC/antigravity-cli-npm`.
+
+> Use `antigyc`, not `agy`. `agy` may belong to Google's own Antigravity CLI or another installed program.
+
+## Start here if you are new
+
+If you only want to use `antigyc`, follow these steps exactly. You do not need to understand npm, API keys, providers, models, staging, or the rest of this README first.
+
+### What you need
+
+You need:
+
+- Windows, macOS, or Linux;
+- Node.js 20 or newer;
+- npm, which normally comes with Node.js;
+- a Google account with the Google/Gemini subscription you want to use.
+
+For the normal setup you do **not** need:
+
+- a Gemini API key;
+- a separate Antigravity installation;
+- a separate Gemini CLI installation;
+- `git init`;
+- a setup wizard;
+- a manual `login` command before your first request.
+
+### Step 1 — check Node.js
+
+Open Command Prompt, PowerShell, Terminal, or your normal shell and run:
 
 ```text
-agyc C:\projects\my-app>
+node --version
+npm --version
 ```
 
-The agent works behind that prompt. It performs project edits in a private OS-temporary copy and publishes the completed file state only after the instruction succeeds.
+If both commands print versions and Node starts with `v20`, `v21`, `v22`, `v23`, `v24`, or newer, continue.
 
-> This repository is an npm implementation. It is not the proprietary Google Antigravity CLI binary.
+If `node` or `npm` says it is not recognized or not found, install Node.js 20 or newer, close the terminal, open a new terminal, and run the two commands again.
 
-## Quick tutorial: Google account, message, and attachment
+### Step 2 — install antigyc
 
-The default path uses your Google/Gemini subscription account. You do not need a Gemini API key.
+Copy and run:
 
-### 1. Install the CLI
-
-From this repository while testing locally:
-
-```cmd
-npm install
-npm link
+```text
+npm install -g antigyc
 ```
 
-After the package is published, the normal global install is:
+Then check that the command works:
 
-```cmd
-npm install -g agyc
+```text
+antigyc --version
 ```
 
-The npm package and public command are `agyc`. Do not use `agy`.
+If that prints a version, installation is complete.
 
-### 2. Open the project and start `agyc`
+On Windows, if `antigyc` is not recognized immediately after installation, close that terminal and open one new terminal, then try `antigyc --version` again.
 
-```cmd
+If it is still not recognized, run:
+
+```text
+npx antigyc --version
+```
+
+If `npx antigyc --version` works, the package is installed/available and only your global command PATH needs attention. See the troubleshooting section near the bottom of this README.
+
+### Step 3 — go to the project you want to work on
+
+`antigyc` works on the folder you launch it from. Always change into the correct project folder first.
+
+Windows example:
+
+```text
 cd C:\projects\my-app
-agyc
+antigyc
 ```
 
-A fresh profile defaults to:
+macOS/Linux example:
+
+```text
+cd ~/projects/my-app
+antigyc
+```
+
+You should get a plain prompt similar to:
+
+```text
+antigyc C:\projects\my-app>
+```
+
+That means you are inside the `antigyc` shell and it is working on `C:\projects\my-app`.
+
+### Step 4 — type what you want
+
+There are no slash commands required. Type a normal instruction after the prompt.
+
+Examples:
+
+```text
+antigyc C:\projects\my-app> check this project and explain what it does
+antigyc C:\projects\my-app> find the bug causing the tests to fail and fix it
+antigyc C:\projects\my-app> add a login page using the existing project style and run the tests
+antigyc C:\projects\my-app> inspect the whole project, fix important problems, and validate everything
+```
+
+The agent can inspect files, edit code, run relevant commands/tests, react to failures, and continue working until it has a final result.
+
+### Step 5 — first use on a new computer
+
+Fresh installs already default to Google subscription authentication. You do not need to configure a key.
+
+The first real request on a new computer may open Google's browser sign-in. If that happens:
+
+1. Sign in with the Google account that owns the subscription you want to use.
+2. Complete the browser approval.
+3. Return to the terminal.
+4. The original `antigyc` request continues automatically.
+
+Later launches reuse the saved Google session, so you normally do not repeat this.
+
+If an old installation has saved different authentication settings, start `antigyc` and run this once:
+
+```text
+antigyc C:\projects\my-app> auth google
+```
+
+You can check the current state with:
+
+```text
+antigyc C:\projects\my-app> status
+```
+
+A fresh setup normally uses:
 
 ```text
 model=gemini-3.8-flash
@@ -49,60 +142,65 @@ turbo=on
 approval=yes
 ```
 
-Fresh installs already use Google auth. If this machine has settings saved by an older build, force and persist the subscription path once:
+### Step 6 — attach a screenshot, PDF, document, or code file
+
+Inside `antigyc`, attach the file first, then type the instruction that should use it:
 
 ```text
-agyc C:\projects\my-app> auth google
+antigyc C:\projects\my-app> attach C:\docs\requirements.pdf
+antigyc C:\projects\my-app> implement the attached requirements and run the tests
 ```
 
-On a new machine, the first real request may open Google's browser sign-in. Sign in with the Google account that owns your subscription, finish the browser flow, and return to the terminal. Later launches reuse that account session.
-
-You can verify the connection at any time:
+Another example:
 
 ```text
-agyc C:\projects\my-app> status
+antigyc C:\projects\my-app> attach C:\designs\checkout.png
+antigyc C:\projects\my-app> recreate this checkout screen using the existing components
 ```
 
-### 3. Send a message
+Supported first-class attachments include images, PDFs, DOCX, XLSX, PPTX, and ordinary text/code files. An attachment is queued for the next normal instruction.
 
-In interactive mode, type the instruction directly at the project prompt:
+### Step 7 — cancel a task
+
+If you want to stop the current task while it is working, press Ctrl+C.
+
+`antigyc` cancels the active request, stops the active provider/command where possible, discards unpublished staged changes, keeps earlier conversation history, and returns to the prompt.
+
+### The three commands most beginners need
 
 ```text
-agyc C:\projects\my-app> inspect this project, explain the important parts, and run the relevant checks
+status     Show the current model/auth/backend/account state
+doctor     Check the installation and report what is wrong
+help       Show all available commands
 ```
 
-For one message without entering interactive mode:
-
-```cmd
-agyc -m "inspect this project and summarize it"
-```
-
-`-p` / `--print` is an equivalent one-shot form. `-M` / `--model` selects a model.
-
-### 4. Attach a file, image, or document
-
-Interactive example:
+If something does not work, run:
 
 ```text
-agyc C:\projects\my-app> attach C:\docs\requirements.pdf
-agyc C:\projects\my-app> implement the requirements in the attached document and run the tests
+antigyc C:\projects\my-app> doctor
 ```
 
-Images, PDFs, DOCX, XLSX, PPTX, and ordinary text/code files are supported. The attachment applies to the next request.
+### One-shot usage (optional)
 
-One-shot attachment example:
+You can also send one request without entering the interactive shell:
 
-```cmd
-agyc --attach "C:\docs\requirements.pdf" -m "implement this specification and validate the result"
+```text
+antigyc -m "inspect this project and summarize it"
 ```
 
-Use multiple `--attach` flags when needed.
+With an attachment:
 
-### 5. Cancel the current request
+```text
+antigyc --attach "C:\docs\requirements.pdf" -m "implement this specification and validate the result"
+```
 
-Press Ctrl+C while the agent is working. It cancels the whole current request, including the active provider call and child command, discards unpublished staged changes, does not save the canceled turn to conversation history, and returns to the interactive prompt. Earlier conversation history remains available.
+### What antigyc looks like while working
 
-Normal agent responses stay shell-friendly: no emojis are requested, and every completed response is instructed to finish with a final `Summary` section.
+`antigyc` intentionally stays close to an ordinary command prompt. It does not show an AI dashboard, tool stream, model badge, reasoning panel, cards, or animated UI. A request may briefly show a single plain activity line such as `Preparing...`, `Working...`, or `Checking...`, which disappears before the final response.
+
+The agent performs project edits in a private OS-temporary staging copy and publishes the completed file state back to the real project only after the instruction succeeds. Normal responses are instructed to avoid emojis and end with a final `Summary` section.
+
+> This repository is an npm implementation. It is not the proprietary Google Antigravity CLI binary.
 
 ## Key behavior
 
@@ -125,11 +223,11 @@ Normal agent responses stay shell-friendly: no emojis are requested, and every c
 - A Google/Gemini subscription account through Google's official Antigravity CLI backend for the default setup.
 - Direct Gemini API-key mode remains available only when you explicitly select it.
 
-Fresh installs default to **Google subscription auth + turbo mode + no command approval prompts**. `agyc` uses the official Antigravity CLI only as a hidden headless backend. A normal npm install pre-provisions that backend into a private per-user data location, even when the machine has no Antigravity installation. The provider binary is never added to PATH and never claims this package's `agyc` command. If pre-provisioning was temporarily offline, the first Google request retries the same bootstrap automatically.
+Fresh installs default to **Google subscription auth + turbo mode + no command approval prompts**. `antigyc` uses the official Antigravity CLI only as a hidden headless backend. A normal npm install pre-provisions that backend into a private per-user data location, even when the machine has no Antigravity installation. The provider binary is never added to PATH and never claims this package's `antigyc` command. If pre-provisioning was temporarily offline, the first Google request retries the same bootstrap automatically.
 
-## Start here: first use in 5 minutes
+## Detailed setup and configuration
 
-If you only want to get `agyc` working, follow this section in order. You do not need to understand the provider internals first.
+The beginner quick start above is enough for normal use. This section gives the same setup in more detail, including local-development installation, explicit authentication choices, diagnostics, and advanced options.
 
 ### 1. Confirm Node.js and npm
 
@@ -142,7 +240,7 @@ npm --version
 
 `node --version` must report **v20 or newer**. If `node` or `npm` is not recognized, install a current Node.js 20+ release first, open a new terminal, and run the two commands again.
 
-### 2. Install `agyc`
+### 2. Install `antigyc`
 
 #### Option A — use this repository right now
 
@@ -161,7 +259,7 @@ node bin\agy.js --version
 node bin\agy.js --help
 ```
 
-To make the short `agyc` command available from other folders:
+To make the short `antigyc` command available from other folders:
 
 ```cmd
 npm link
@@ -170,11 +268,11 @@ npm link
 On Windows, if this is the first install/link on the machine, close that terminal and open **one new terminal** so it inherits any user-PATH update. Then verify:
 
 ```cmd
-where agyc
-agyc --version
+where antigyc
+antigyc --version
 ```
 
-If `agyc` is still not found, do not get stuck on PATH. You can always run the repository entry point directly from the project you want to work on:
+If `antigyc` is still not found, do not get stuck on PATH. You can always run the repository entry point directly from the project you want to work on:
 
 ```cmd
 cd C:\projects\my-app
@@ -193,27 +291,27 @@ node /path/to/antigravity-cli-npm/bin/agy.js
 Global install:
 
 ```cmd
-npm install -g agyc
-agyc --version
+npm install -g antigyc
+antigyc --version
 ```
 
 Project-local install:
 
 ```cmd
-npm install --save-dev agyc
-npx agyc --version
+npm install --save-dev antigyc
+npx antigyc --version
 ```
 
-On Windows, a first global install may require one new terminal before `agyc` is found. The package adds npm's command directory only when missing; it does not reorder PATH entries.
+On Windows, a first global install may require one new terminal before `antigyc` is found. The package adds npm's command directory only when missing; it does not reorder PATH entries.
 
-> Use **`agyc`**, not `agy`. This package deliberately does not export `agy` or `antigravity`, because Google's official Antigravity backend or another product may already own those names.
+> Use **`antigyc`**, not `agy`. This package deliberately does not export `agy` or `antigravity`, because Google's official Antigravity backend or another product may already own those names.
 
 ### 3. Google subscription authentication is already the default
 
-For your Google/Gemini Pro subscription, do **not** set an API key and do **not** need to install Antigravity separately or run `agyc login` first. Just start:
+For your Google/Gemini Pro subscription, do **not** set an API key and do **not** need to install Antigravity separately or run `antigyc login` first. Just start:
 
 ```cmd
-agyc
+antigyc
 ```
 
 A fresh profile starts with `model=gemini-3.8-flash`, `auth=google`, `turbo=on`, and `approval=yes`. On a new device, the first real request may open Google's official browser sign-in once. Sign in with the Google account that owns your Gemini/Google AI Pro subscription, complete browser consent, and return to the terminal; the original request continues automatically. Later sessions reuse the provider's secure account session.
@@ -223,7 +321,7 @@ To verify the defaults after login, run `status`. Gemini 3.8 Flash is the defaul
 If you want to explicitly verify or renew the Google session:
 
 ```cmd
-agyc login
+antigyc login
 ```
 
 If you want direct Gemini API-key mode instead, set `GEMINI_API_KEY` first.
@@ -232,62 +330,62 @@ Windows CMD:
 
 ```cmd
 set GEMINI_API_KEY=your_api_key_here
-agyc --auth api-key
+antigyc --auth api-key
 ```
 
 PowerShell:
 
 ```powershell
 $env:GEMINI_API_KEY="your_api_key_here"
-agyc --auth api-key
+antigyc --auth api-key
 ```
 
 macOS/Linux:
 
 ```bash
 export GEMINI_API_KEY="your_api_key_here"
-agyc --auth api-key
+antigyc --auth api-key
 ```
 
-If a `GEMINI_API_KEY` is already present in your environment, `auth auto` prefers API-key mode. Use `agyc --auth google` when you specifically want the Google subscription backend.
+If a `GEMINI_API_KEY` is already present in your environment, `auth auto` prefers API-key mode. Use `antigyc --auth google` when you specifically want the Google subscription backend.
 
 ### 4. Open the project you actually want to work on
 
-`agyc` works in a Git repository **or** a normal folder. Change into the target folder first:
+`antigyc` works in a Git repository **or** a normal folder. Change into the target folder first:
 
 ```cmd
 cd C:\projects\my-app
-agyc
+antigyc
 ```
 
 You should see only the normal current-directory prompt:
 
 ```text
-agyc C:\projects\my-app>
+antigyc C:\projects\my-app>
 ```
 
-Do not start `agyc` from the `antigravity-cli-npm` source repository unless that is the project you actually want the agent to modify.
+Do not start `antigyc` from the `antigravity-cli-npm` source repository unless that is the project you actually want the agent to modify.
 
 ### 5. Type a normal coding instruction
 
 Examples:
 
 ```text
-agyc C:\projects\my-app> check this project and explain the important parts
-agyc C:\projects\my-app> find the cause of the failing tests and fix it
-agyc C:\projects\my-app> add validation to the signup endpoint and run the relevant tests
-agyc C:\projects\my-app> refactor this module without changing public behavior
+antigyc C:\projects\my-app> check this project and explain the important parts
+antigyc C:\projects\my-app> find the cause of the failing tests and fix it
+antigyc C:\projects\my-app> add validation to the signup endpoint and run the relevant tests
+antigyc C:\projects\my-app> refactor this module without changing public behavior
 ```
 
 For a request that takes more than a moment, you may briefly see one plain line such as `Preparing...`, `Inspecting...`, `Working...`, `Checking...`, or `Applying changes...`. It is erased before the final response.
 
 ### 6. Run these two checks if anything looks wrong
 
-Inside `agyc`:
+Inside `antigyc`:
 
 ```text
-agyc C:\projects\my-app> status
-agyc C:\projects\my-app> doctor
+antigyc C:\projects\my-app> status
+antigyc C:\projects\my-app> doctor
 ```
 
 `status` shows the selected model/auth/approval state and whether the backend/account are ready. `doctor` checks Node/npm, command resolution, state-directory access, provider/account health, provider provenance, and basic network reachability.
@@ -322,7 +420,7 @@ exit                     Exit
 Run one text message/instruction and exit:
 
 ```cmd
-agyc -m "check this project and summarize it"
+antigyc -m "check this project and summarize it"
 ```
 
 `-p` / `--print` remains an equivalent one-shot form for compatibility.
@@ -330,7 +428,7 @@ agyc -m "check this project and summarize it"
 Run autonomously in a project you trust:
 
 ```cmd
-agyc --turbo -p "fix the failing tests and run the relevant validation"
+antigyc --turbo -p "fix the failing tests and run the relevant validation"
 ```
 
 Inside interactive mode, `turbo on` persists the same trusted no-prompt execution preference for later launches. `approval ask` disables turbo again.
@@ -346,42 +444,42 @@ npm pack
 Then in another folder:
 
 ```cmd
-mkdir C:\temp\agyc-test
-cd C:\temp\agyc-test
+mkdir C:\temp\antigyc-test
+cd C:\temp\antigyc-test
 npm init -y
-npm install C:\path\to\antigravity-cli-npm\agyc-0.1.0.tgz
-npx agyc --version
-npx agyc --help
-npx agyc
+npm install C:\path\to\antigravity-cli-npm\antigyc-0.1.1.tgz
+npx antigyc --version
+npx antigyc --help
+npx antigyc
 ```
 
 The public executable name is:
 
 ```text
-agyc
+antigyc
 ```
 
 Git is optional. Git-aware operations are useful when Git exists, but the editing transaction itself is filesystem-based and works in ordinary folders too.
 
 ## Zero-setup Google account bootstrap
 
-You do **not** need to install Antigravity separately or run `agyc login` before using the CLI. npm `postinstall` pre-provisions and health-checks the official backend. Start `agyc` normally and enter your first request. In Google mode, that request re-checks/repairs the backend if needed, checks the native Antigravity secure session, and starts the official browser sign-in flow only when that device actually needs authentication.
+You do **not** need to install Antigravity separately or run `antigyc login` before using the CLI. npm `postinstall` pre-provisions and health-checks the official backend. Start `antigyc` normally and enter your first request. In Google mode, that request re-checks/repairs the backend if needed, checks the native Antigravity secure session, and starts the official browser sign-in flow only when that device actually needs authentication.
 
 Google subscription mode now executes through Google's **official Antigravity CLI headless client**, rather than the older Gemini CLI / Code Assist client that rejects personal accounts. The provider binary is invoked by its absolute per-user path, with JSON output captured internally, so its TUI, progress stream, slash commands, banners, and tool narration do not appear inside this wrapper.
 
-The package-managed official backend is deliberately kept out of normal command directories: `%LOCALAPPDATA%\antigravity-cli-npm\provider\agy.exe` on Windows, `~/Library/Application Support/antigravity-cli-npm/provider/agy` on macOS, and `${XDG_DATA_HOME:-~/.local/share}/antigravity-cli-npm/provider/agy` on Linux. `agyc` installs it from Google's official HTTPS installer using `--skip-path --skip-aliases` and invokes it only by absolute path, so the provider binary cannot take over this package's command name. Managed installs record an external provenance receipt beside the binary with the official installer URL plus SHA-256 hashes of the fetched installer and installed binary. `provider`/`doctor` can detect an unrecorded or changed binary, and `provider update` performs a fresh official install, health-checks it, records the new receipt, and restores the previous managed binary if validation fails. An explicit `ANTIGRAVITY_CLI_BINARY` override remains externally managed and is never silently deleted or updated.
+The package-managed official backend is deliberately kept out of normal command directories: `%LOCALAPPDATA%\antigravity-cli-npm\provider\agy.exe` on Windows, `~/Library/Application Support/antigravity-cli-npm/provider/agy` on macOS, and `${XDG_DATA_HOME:-~/.local/share}/antigravity-cli-npm/provider/agy` on Linux. `antigyc` installs it from Google's official HTTPS installer using `--skip-path --skip-aliases` and invokes it only by absolute path, so the provider binary cannot take over this package's command name. Managed installs record an external provenance receipt beside the binary with the official installer URL plus SHA-256 hashes of the fetched installer and installed binary. `provider`/`doctor` can detect an unrecorded or changed binary, and `provider update` performs a fresh official install, health-checks it, records the new receipt, and restores the previous managed binary if validation fails. An explicit `ANTIGRAVITY_CLI_BINARY` override remains externally managed and is never silently deleted or updated.
 
-Authentication is persistent through the official Antigravity secure account session, including Windows Credential Manager on Windows. Normal `agyc` requests probe that native session automatically and continue silently when it is already usable. On a first use on a new device/user profile, the wrapper starts the official Antigravity binary with no arguments inside a hidden pseudo-terminal rooted in an empty OS-temporary directory. The official client itself opens its Antigravity browser sign-in flow and writes its native secure-keyring session; all provider terminal rendering remains captured and invisible. As soon as the official session becomes usable, the hidden bootstrap process is stopped and `agyc` performs one headless verification request before continuing the original request. There is no Gemini CLI/Code Assist OAuth fallback, no `oauth_creds.json`, and no credential-migration step.
+Authentication is persistent through the official Antigravity secure account session, including Windows Credential Manager on Windows. Normal `antigyc` requests probe that native session automatically and continue silently when it is already usable. On a first use on a new device/user profile, the wrapper starts the official Antigravity binary with no arguments inside a hidden pseudo-terminal rooted in an empty OS-temporary directory. The official client itself opens its Antigravity browser sign-in flow and writes its native secure-keyring session; all provider terminal rendering remains captured and invisible. As soon as the official session becomes usable, the hidden bootstrap process is stopped and `antigyc` performs one headless verification request before continuing the original request. There is no Gemini CLI/Code Assist OAuth fallback, no `oauth_creds.json`, and no credential-migration step.
 
 Antigravity **IDE** is not required. The official Antigravity **CLI backend** is the supported Google subscription transport and is intentionally hidden behind this package's CMD-style interface.
 
 ### Agentic task execution
 
-`agyc` is designed to run multi-step coding tasks rather than behave like a single request/response chat. Broad tasks can begin with a compact project overview, discover likely project validation commands, navigate symbol definitions/references, apply focused multi-file patches, run native executables with structured argv when a shell is unnecessary, react to failed checks, revise the implementation, and validate again before returning the final response. Direct API mode allows up to 120 model/tool iterations per instruction, retries transient model-service failures automatically, preserves useful head/tail evidence while bounding large tool/file results, requires a successful post-edit verification pass, and detects repeated identical tool loops so the model is told to change strategy instead of wasting its entire step budget. Google subscription mode delegates the coding loop to the official Antigravity agent with equivalent instructions to continue through inspection, implementation, debugging, and validation rather than stopping at the first failure.
+`antigyc` is designed to run multi-step coding tasks rather than behave like a single request/response chat. Broad tasks can begin with a compact project overview, discover likely project validation commands, navigate symbol definitions/references, apply focused multi-file patches, run native executables with structured argv when a shell is unnecessary, react to failed checks, revise the implementation, and validate again before returning the final response. Direct API mode allows up to 120 model/tool iterations per instruction, retries transient model-service failures automatically, preserves useful head/tail evidence while bounding large tool/file results, requires a successful post-edit verification pass, and detects repeated identical tool loops so the model is told to change strategy instead of wasting its entire step budget. Google subscription mode delegates the coding loop to the official Antigravity agent with equivalent instructions to continue through inspection, implementation, debugging, and validation rather than stopping at the first failure.
 
 The execution remains transactional while doing this: all autonomous file changes and project commands operate on the disposable staging copy, and only the successful completed result is applied back to the real project.
 
-Use the Google account associated with the subscription you want Antigravity to use. A brand-new device may still require you to approve Google's browser sign-in once because the provider's secure session is device-local; that is identity consent, not CLI setup. Afterward, normal restarts and projects reuse the session automatically. `agyc login` remains available only as an explicit verification/renewal command. The wrapper never falls back to Gemini CLI or Code Assist authentication.
+Use the Google account associated with the subscription you want Antigravity to use. A brand-new device may still require you to approve Google's browser sign-in once because the provider's secure session is device-local; that is identity consent, not CLI setup. Afterward, normal restarts and projects reuse the session automatically. `antigyc login` remains available only as an explicit verification/renewal command. The wrapper never falls back to Gemini CLI or Code Assist authentication.
 
 Some organization or Workspace environments may additionally require a Google Cloud project:
 
@@ -389,7 +487,7 @@ Some organization or Workspace environments may additionally require a Google Cl
 set GOOGLE_CLOUD_PROJECT=your-project-id
 ```
 
-After any required first-device browser consent completes, the original request continues and later use stays on the plain `agyc` prompt.
+After any required first-device browser consent completes, the original request continues and later use stays on the plain `antigyc` prompt.
 
 ## API-key authentication
 
@@ -397,21 +495,21 @@ Windows CMD:
 
 ```cmd
 set GEMINI_API_KEY=your_api_key_here
-agyc --auth api-key
+antigyc --auth api-key
 ```
 
 PowerShell:
 
 ```powershell
 $env:GEMINI_API_KEY="your_api_key_here"
-agyc --auth api-key
+antigyc --auth api-key
 ```
 
 macOS/Linux:
 
 ```bash
 export GEMINI_API_KEY="your_api_key_here"
-agyc --auth api-key
+antigyc --auth api-key
 ```
 
 Authentication modes:
@@ -427,8 +525,8 @@ auth api-key
 From the process command line:
 
 ```cmd
-agyc --auth google
-agyc --auth api-key
+antigyc --auth google
+antigyc --auth api-key
 ```
 
 Fresh-profile default is already `google`. `ANTIGRAVITY_AUTH` is only needed when you intentionally want to override it:
@@ -443,31 +541,31 @@ Start in the project you want to modify:
 
 ```cmd
 cd C:\projects\my-app
-agyc
+antigyc
 ```
 
 Then type normal instructions:
 
 ```text
-agyc C:\projects\my-app> find the cause of the failing tests and fix it
+antigyc C:\projects\my-app> find the cause of the failing tests and fix it
 
 Fixed the validation bug and the affected tests now pass.
 
-agyc C:\projects\my-app> add input validation to the signup endpoint
+antigyc C:\projects\my-app> add input validation to the signup endpoint
 
 Added signup validation and updated the endpoint tests.
 
-agyc C:\projects\my-app>
+antigyc C:\projects\my-app>
 ```
 
-There is no visible tool stream while the task is running. For requests that take more than a moment, `agyc` uses one transient plain-text line with simple phases such as `Preparing... 1s`, `Inspecting... 4s`, `Working... 12s`, `Checking... 18s`, and `Applying changes... 21s`. It is not a spinner or progress UI: there are no colors, panels, tool names, model names, reasoning labels, or animations. The line pauses during permission prompts and is erased before the final response or error appears. Pressing Ctrl+C during active work cancels the whole current agent request—not only a child command—including the provider call and any active command. The canceled turn is not appended to conversation history, staged work is discarded/rolled back, and the interactive shell returns `Canceled.` while keeping earlier conversation turns available.
+There is no visible tool stream while the task is running. For requests that take more than a moment, `antigyc` uses one transient plain-text line with simple phases such as `Preparing... 1s`, `Inspecting... 4s`, `Working... 12s`, `Checking... 18s`, and `Applying changes... 21s`. It is not a spinner or progress UI: there are no colors, panels, tool names, model names, reasoning labels, or animations. The line pauses during permission prompts and is erased before the final response or error appears. Pressing Ctrl+C during active work cancels the whole current agent request—not only a child command—including the provider call and any active command. The canceled turn is not appended to conversation history, staged work is discarded/rolled back, and the interactive shell returns `Canceled.` while keeping earlier conversation turns available.
 
 ## One-shot usage
 
 Run one text message/instruction and exit:
 
 ```cmd
-agyc -m "find the bug and fix it"
+antigyc -m "find the bug and fix it"
 ```
 
 `-p` / `--print` remains an equivalent one-shot form for compatibility.
@@ -475,7 +573,7 @@ agyc -m "find the bug and fix it"
 With options:
 
 ```cmd
-agyc --model pro --reasoning high -p "implement the feature and run the tests"
+antigyc --model pro --reasoning high -p "implement the feature and run the tests"
 ```
 
 The same hidden transaction is used in one-shot mode.
@@ -487,13 +585,13 @@ All interactive controls are ordinary text commands at the same project prompt.
 ### Help
 
 ```text
-agyc C:\project> help
+antigyc C:\project> help
 ```
 
 ### Status
 
 ```text
-agyc C:\project> status
+antigyc C:\project> status
 model=gemini-3.8-flash reasoning=auto auth=google approval=yes turbo=on backend=ready account=connected attachments=0 history=0
 ```
 
@@ -502,12 +600,12 @@ model=gemini-3.8-flash reasoning=auto auth=google approval=yes turbo=on backend=
 ### Doctor, provider, and interrupted tasks
 
 ```text
-agyc C:\project> doctor
-agyc C:\project> provider
-agyc C:\project> provider update
-agyc C:\project> task
-agyc C:\project> task clear
-agyc C:\project> resume
+antigyc C:\project> doctor
+antigyc C:\project> provider
+antigyc C:\project> provider update
+antigyc C:\project> task
+antigyc C:\project> task clear
+antigyc C:\project> resume
 ```
 
 `doctor` prints plain `name=ok|warn|fail` health lines for the wrapper version, Node/npm, workspace/state writability, command resolution, Google backend/account state, provider provenance, and basic network reachability. `provider` reports the private backend status; `provider update` reinstalls a managed backend from the official installer with post-install validation and rollback. `task` reports whether a crash checkpoint exists, `resume` continues it only if the real-project baseline is still unchanged, and `task clear` deliberately deletes both the checkpoint and its temporary staged copy.
@@ -515,20 +613,20 @@ agyc C:\project> resume
 ### Current directory
 
 ```text
-agyc C:\project> cwd
+antigyc C:\project> cwd
 C:\project
 ```
 
 ### Clear terminal
 
 ```text
-agyc C:\project> cls
+antigyc C:\project> cls
 ```
 
 ### Exit
 
 ```text
-agyc C:\project> exit
+antigyc C:\project> exit
 ```
 
 `quit` is accepted as an exit alias.
@@ -538,14 +636,14 @@ agyc C:\project> exit
 Show the current model:
 
 ```text
-agyc C:\project> model
+antigyc C:\project> model
 auto
 ```
 
 Discover available choices:
 
 ```text
-agyc C:\project> model list
+antigyc C:\project> model list
 auto
 pro
 flash
@@ -553,27 +651,27 @@ flash-lite
 <models from Google's public catalog and the installed provider catalog>
 ```
 
-`model list` is discovery-backed rather than a hard-coded release list. In Google subscription mode, `agyc` first runs the official Antigravity backend's `models` command with all provider progress captured. That makes the list reflect models actually offered to the signed-in subscription. Effort-specific provider slugs such as `gemini-3.8-flash-high` are normalized to the base model `gemini-3.8-flash`, because this wrapper keeps reasoning effort as a separate `reasoning` setting.
+`model list` is discovery-backed rather than a hard-coded release list. In Google subscription mode, `antigyc` first runs the official Antigravity backend's `models` command with all provider progress captured. That makes the list reflect models actually offered to the signed-in subscription. Effort-specific provider slugs such as `gemini-3.8-flash-high` are normalized to the base model `gemini-3.8-flash`, because this wrapper keeps reasoning effort as a separate `reasoning` setting.
 
-If official subscription discovery is unavailable, `agyc` falls back to Google's public Gemini model documentation. In API-key mode, it uses the live Gemini `/models` endpoint and keeps models that support `generateContent`. The short names `auto`, `pro`, `flash`, and `flash-lite` remain convenience choices and resolve dynamically to the newest matching model available through the active provider; an unavailable alias fails clearly instead of silently selecting another model.
+If official subscription discovery is unavailable, `antigyc` falls back to Google's public Gemini model documentation. In API-key mode, it uses the live Gemini `/models` endpoint and keeps models that support `generateContent`. The short names `auto`, `pro`, `flash`, and `flash-lite` remain convenience choices and resolve dynamically to the newest matching model available through the active provider; an unavailable alias fails clearly instead of silently selecting another model.
 
 Change the model silently:
 
 ```text
-agyc C:\project> model pro
-agyc C:\project>
+antigyc C:\project> model pro
+antigyc C:\project>
 ```
 
 Concrete provider model names may also be supplied:
 
 ```text
-agyc C:\project> model gemini-3.1-pro-preview
+antigyc C:\project> model gemini-3.1-pro-preview
 ```
 
 Process option:
 
 ```cmd
-agyc --model pro
+antigyc --model pro
 ```
 
 Environment default:
@@ -589,14 +687,14 @@ Reasoning controls affect provider thinking configuration without exposing model
 Show the current setting:
 
 ```text
-agyc C:\project> reasoning
+antigyc C:\project> reasoning
 auto
 ```
 
 Choices:
 
 ```text
-agyc C:\project> reasoning list
+antigyc C:\project> reasoning list
 auto
 low
 high
@@ -605,11 +703,11 @@ high
 Set it:
 
 ```text
-agyc C:\project> reasoning high
-agyc C:\project>
+antigyc C:\project> reasoning high
+antigyc C:\project>
 ```
 
-Interactive changes to `model`, `reasoning`, `auth`, and `approval` are persisted globally under the external state root and reused in later `agyc` processes. Command-line flags and environment variables can still override those saved defaults for a specific launch.
+Interactive changes to `model`, `reasoning`, `auth`, and `approval` are persisted globally under the external state root and reused in later `antigyc` processes. Command-line flags and environment variables can still override those saved defaults for a specific launch.
 
 Meaning:
 
@@ -622,7 +720,7 @@ Thoughts and chain-of-thought are never printed in normal terminal output or sto
 Process option:
 
 ```cmd
-agyc --reasoning high
+antigyc --reasoning high
 ```
 
 Environment default:
@@ -636,14 +734,14 @@ set ANTIGRAVITY_REASONING=high
 Turbo mode and no-prompt autonomous command execution are enabled by default on a fresh profile:
 
 ```text
-agyc C:\project> turbo on
-agyc C:\project>
+antigyc C:\project> turbo on
+antigyc C:\project>
 ```
 
 Check or disable it with `turbo` / `turbo off`. Turning turbo off also restores `approval ask`. One-shot equivalent:
 
 ```cmd
-agyc --turbo -p "finish the task, run the checks, and fix failures"
+antigyc --turbo -p "finish the task, run the checks, and fix failures"
 ```
 
 Turbo mode implies command approval `yes` for the launch. `--no-turbo` explicitly restores approval prompts for that launch even if turbo was previously persisted. Turbo does not remove the wrapper's transactional staging, conflict detection, cancellation rollback, or project-file path protections in direct API mode. The Google backend keeps using the existing trusted `yes` behavior, which removes its terminal sandbox while the wrapper still stages project publication.
@@ -651,14 +749,14 @@ Turbo mode implies command approval `yes` for the launch. `--no-turbo` explicitl
 Show the current approval mode:
 
 ```text
-agyc C:\project> approval
+antigyc C:\project> approval
 ask
 ```
 
 Choices:
 
 ```text
-agyc C:\project> approval list
+antigyc C:\project> approval list
 ask
 yes
 ```
@@ -666,9 +764,9 @@ yes
 Fresh-profile default:
 
 ```text
-agyc C:\project> approval
+antigyc C:\project> approval
 yes
-agyc C:\project> turbo
+antigyc C:\project> turbo
 on
 ```
 
@@ -677,13 +775,13 @@ Use `approval ask` or `turbo off` only when you intentionally want command promp
 Autonomous mode:
 
 ```text
-agyc C:\project> approval yes
+antigyc C:\project> approval yes
 ```
 
 or at startup:
 
 ```cmd
-agyc --yes
+antigyc --yes
 ```
 
 In direct API-key mode, `ask` requires confirmation before shell commands. In Google-account mode, the provider's print/headless path cannot surface interactive permission prompts. Normal `ask` therefore auto-permits provider tools **inside Antigravity's terminal sandbox and the wrapper's private staging copy**; `yes` removes the provider sandbox while retaining the wrapper's staging transaction.
@@ -695,10 +793,10 @@ In direct API-key mode, `ask` requires confirmation before shell commands. In Go
 Attachments are queued for the **next** ordinary instruction.
 
 ```text
-agyc C:\project> attach screenshot.png
-agyc C:\project> attach requirements.pdf
-agyc C:\project> attach notes.md
-agyc C:\project> implement the change described in these files
+antigyc C:\project> attach screenshot.png
+antigyc C:\project> attach requirements.pdf
+antigyc C:\project> attach notes.md
+antigyc C:\project> implement the change described in these files
 ```
 
 Successful `attach` commands produce no confirmation line.
@@ -706,7 +804,7 @@ Successful `attach` commands produce no confirmation line.
 Inspect pending attachments:
 
 ```text
-agyc C:\project> attach
+antigyc C:\project> attach
 C:\project\screenshot.png
 C:\project\requirements.pdf
 C:\project\notes.md
@@ -715,13 +813,13 @@ C:\project\notes.md
 `attach list` is equivalent:
 
 ```text
-agyc C:\project> attach list
+antigyc C:\project> attach list
 ```
 
 Clear the queue:
 
 ```text
-agyc C:\project> attach clear
+antigyc C:\project> attach clear
 ```
 
 After a successful user instruction, the queued attachments are consumed and the queue returns to empty.
@@ -750,24 +848,24 @@ Images and PDFs are supplied as multimodal content where the provider supports i
 `--attach` is repeatable:
 
 ```cmd
-agyc --attach screenshot.png --attach requirements.pdf -p "fix the UI according to these files"
+antigyc --attach screenshot.png --attach requirements.pdf -p "fix the UI according to these files"
 ```
 
 Paths containing spaces can be quoted:
 
 ```cmd
-agyc --attach "C:\docs\feature spec.pdf" -p "implement this"
+antigyc --attach "C:\docs\feature spec.pdf" -p "implement this"
 ```
 
 Interactive equivalent:
 
 ```text
-agyc C:\project> attach "C:\docs\feature spec.pdf"
+antigyc C:\project> attach "C:\docs\feature spec.pdf"
 ```
 
 ## Conversation history
 
-Conversation history persists across `agyc` restarts for each project directory.
+Conversation history persists across `antigyc` restarts for each project directory.
 
 It is stored **outside** the repository. Default state root:
 
@@ -786,37 +884,37 @@ Each project is mapped to a stable hashed history filename.
 Show conversation history only when requested:
 
 ```text
-agyc C:\project> history
+antigyc C:\project> history
 ```
 
 Show the exact external history path:
 
 ```text
-agyc C:\project> history path
+antigyc C:\project> history path
 C:\Users\you\.antigravity-cli\history\<project-key>.json
 ```
 
 Clear it:
 
 ```text
-agyc C:\project> history clear
+antigyc C:\project> history clear
 ```
 
 The general `clear` command also clears persisted conversation history and pending attachments for the current project:
 
 ```text
-agyc C:\project> clear
+antigyc C:\project> clear
 ```
 
 History stores user messages, final replies, timestamps, and attachment metadata such as attachment names/paths. It does not store internal reasoning or the tool-by-tool execution stream.
 
 ### Relocate external state
 
-Set `ANTIGRAVITY_HOME` before starting `agyc`:
+Set `ANTIGRAVITY_HOME` before starting `antigyc`:
 
 ```cmd
 set ANTIGRAVITY_HOME=D:\private\agy-state
-agyc
+antigyc
 ```
 
 No history database is placed inside the project unless you explicitly point `ANTIGRAVITY_HOME` there yourself.
@@ -861,7 +959,7 @@ The staging changes are discarded. Ctrl+C propagates into provider/API requests 
 
 ### On abnormal process termination
 
-Before autonomous work begins, `agyc` records a small project-scoped checkpoint outside the repository that points to the OS-temporary staged transaction. A normal success, handled failure, or Ctrl+C removes that checkpoint and staging directory. If the process is killed or crashes before cleanup runs, the checkpoint may remain. `agyc resume` reopens that exact staged copy, verifies that the real project still matches the original baseline, and continues the original request; if the baseline changed, resume refuses to publish. `agyc task clear` discards the interrupted state without touching the real project.
+Before autonomous work begins, `antigyc` records a small project-scoped checkpoint outside the repository that points to the OS-temporary staged transaction. A normal success, handled failure, or Ctrl+C removes that checkpoint and staging directory. If the process is killed or crashes before cleanup runs, the checkpoint may remain. `antigyc resume` reopens that exact staged copy, verifies that the real project still matches the original baseline, and continues the original request; if the baseline changed, resume refuses to publish. `antigyc task clear` discards the interrupted state without touching the real project.
 
 ### On concurrent external edits
 
@@ -882,10 +980,10 @@ This works:
 ```cmd
 mkdir C:\projects\scratch-app
 cd C:\projects\scratch-app
-agyc
+antigyc
 ```
 
-No `git init` is performed and no `.git` directory is created by `agyc`.
+No `git init` is performed and no `.git` directory is created by `antigyc`.
 
 ### Existing Git repository
 
@@ -933,25 +1031,25 @@ The direct API-key implementation constrains its built-in file tools to the curr
 ## CLI options
 
 ```text
-agyc
-agyc doctor
-agyc login
-agyc provider [status|update]
-agyc resume
-agyc task [clear]
-agyc init
-agyc -m <message>
-agyc -p <prompt>
-agyc --attach <path>
-agyc --yes
-agyc --turbo
-agyc --no-turbo
-agyc --auth auto|google|api-key
-agyc --model <name>
-agyc --reasoning auto|low|high
-agyc --base-url <url>
-agyc --help
-agyc --version
+antigyc
+antigyc doctor
+antigyc login
+antigyc provider [status|update]
+antigyc resume
+antigyc task [clear]
+antigyc init
+antigyc -m <message>
+antigyc -p <prompt>
+antigyc --attach <path>
+antigyc --yes
+antigyc --turbo
+antigyc --no-turbo
+antigyc --auth auto|google|api-key
+antigyc --model <name>
+antigyc --reasoning auto|low|high
+antigyc --base-url <url>
+antigyc --help
+antigyc --version
 ```
 
 Short forms:
@@ -987,28 +1085,28 @@ Short forms:
 ### Fix a failing test
 
 ```text
-agyc C:\project> fix the failing tests and run the relevant test suite
+antigyc C:\project> fix the failing tests and run the relevant test suite
 ```
 
 ### Implement from a screenshot
 
 ```text
-agyc C:\project> attach C:\designs\checkout.png
-agyc C:\project> recreate this checkout behavior using the existing components
+antigyc C:\project> attach C:\designs\checkout.png
+antigyc C:\project> recreate this checkout behavior using the existing components
 ```
 
 ### Implement from a PDF specification
 
 ```text
-agyc C:\project> attach C:\specs\api-requirements.pdf
-agyc C:\project> implement the required endpoint changes and tests
+antigyc C:\project> attach C:\specs\api-requirements.pdf
+antigyc C:\project> implement the required endpoint changes and tests
 ```
 
 ### Continue work tomorrow
 
 ```cmd
 cd C:\projects\my-app
-agyc
+antigyc
 ```
 
 The project-scoped external conversation history is loaded automatically.
@@ -1016,19 +1114,19 @@ The project-scoped external conversation history is loaded automatically.
 ### Start with a clean conversation
 
 ```text
-agyc C:\project> clear
+antigyc C:\project> clear
 ```
 
 ### Use stronger reasoning for one session
 
 ```cmd
-agyc --reasoning high --model pro
+antigyc --reasoning high --model pro
 ```
 
 ### Run autonomously in a trusted local project
 
 ```cmd
-agyc --yes -p "apply the refactor and run all tests"
+antigyc --yes -p "apply the refactor and run all tests"
 ```
 
 ## Failure behavior
@@ -1148,11 +1246,11 @@ npm publish --dry-run --json
 
 Before the real publish, verify `npm whoami` succeeds for the intended npm account. Then inspect the package contents and only publish when the package name, metadata, license, account, and two-factor/token policy are ready. This package is configured as MIT licensed and includes `LICENSE` in the published files. Its npm metadata points to the GitHub repository, issue tracker, and README homepage.
 
-This repository is currently configured with version `0.1.0` and `publishConfig.access = public`. Publication is a separate explicit step; running the commands above does not publish anything.
+This repository is currently configured with version `0.1.1` and `publishConfig.access = public`. Publication is a separate explicit step; running the commands above does not publish anything.
 
 ## Troubleshooting
 
-### `agyc` is not recognized / command not found
+### `antigyc` is not recognized / command not found
 
 First confirm Node/npm work:
 
@@ -1172,15 +1270,15 @@ npm link
 On Windows, open one new terminal after the first link/install, then check:
 
 ```cmd
-where agyc
-agyc --version
+where antigyc
+antigyc --version
 ```
 
 PowerShell equivalent:
 
 ```powershell
-Get-Command agyc
-agyc --version
+Get-Command antigyc
+antigyc --version
 ```
 
 If PATH is still wrong, bypass it completely. Change to the project you want to work on and run the CLI by absolute path:
@@ -1190,17 +1288,17 @@ cd C:\projects\my-app
 node C:\path\to\antigravity-cli-npm\bin\agy.js
 ```
 
-The source file is still named `bin/agy.js`; the **public command is `agyc`**. Do not rename or depend on a public `agy` command.
+The source file is still named `bin/agy.js`; the **public command is `antigyc`**. Do not rename or depend on a public `agy` command.
 
-### I accidentally ran `agy` instead of `agyc`
+### I accidentally ran `agy` instead of `antigyc`
 
 `agy` is not exported by this package. It may belong to Google's official Antigravity CLI or another installed product. Run:
 
 ```cmd
-agyc --version
+antigyc --version
 ```
 
-and use `agyc` for this npm wrapper.
+and use `antigyc` for this npm wrapper.
 
 ### `Missing GEMINI_API_KEY`
 
@@ -1210,20 +1308,20 @@ Either:
 
 ```cmd
 set GEMINI_API_KEY=your_key
-agyc --auth api-key
+antigyc --auth api-key
 ```
 
 or switch back to Google mode:
 
 ```cmd
-agyc --auth google
+antigyc --auth google
 ```
 
 Google mode does not require a separate Antigravity install or login command. npm installation pre-provisions the official backend; your first normal request automatically repairs/retries that backend if necessary and opens the official browser sign-in only when the native secure session is missing. Once approved on that device, later requests and restarts reuse the secure session silently. The wrapper does not create or read Gemini CLI `oauth_creds.json` credentials.
 
 ### Google browser sign-in appears on a new device
 
-This is expected once per device/user profile when the official Antigravity keyring has no usable session. Finish the provider's browser consent and the original `agyc` request continues automatically. No additional CLI command is required.
+This is expected once per device/user profile when the official Antigravity keyring has no usable session. Finish the provider's browser consent and the original `antigyc` request continues automatically. No additional CLI command is required.
 
 ### The target folder has no `.git`
 
@@ -1243,11 +1341,11 @@ Re-run the instruction after reviewing the external change. The wrapper refuses 
 
 ### `An interrupted task is available`
 
-A previous `agyc` process ended abnormally after its staged transaction was prepared. Inspect it with `agyc task`, continue it with `agyc resume`, or deliberately discard it with `agyc task clear`. Resume validates the original real-project baseline before publishing anything.
+A previous `antigyc` process ended abnormally after its staged transaction was prepared. Inspect it with `antigyc task`, continue it with `antigyc resume`, or deliberately discard it with `antigyc task clear`. Resume validates the original real-project baseline before publishing anything.
 
 ### Provider provenance is `unrecorded` or `changed`
 
-`unrecorded` means the binary predates the provenance receipt or was supplied outside the current managed install flow. `changed` means its current SHA-256 no longer matches the recorded managed-binary digest. `agyc provider update` performs a fresh managed install from the official Google installer and rolls back if the replacement fails its health check. An `ANTIGRAVITY_CLI_BINARY` override is external and cannot be updated by this command.
+`unrecorded` means the binary predates the provenance receipt or was supplied outside the current managed install flow. `changed` means its current SHA-256 no longer matches the recorded managed-binary digest. `antigyc provider update` performs a fresh managed install from the official Google installer and rolls back if the replacement fails its health check. An `ANTIGRAVITY_CLI_BINARY` override is external and cannot be updated by this command.
 
 ### Where is conversation history stored?
 
@@ -1256,19 +1354,19 @@ Inside `ANTIGRAVITY_HOME\history` if configured; otherwise below your home direc
 Use:
 
 ```text
-agyc C:\project> history path
+antigyc C:\project> history path
 ```
 
 ### How do I erase project conversation history?
 
 ```text
-agyc C:\project> history clear
+antigyc C:\project> history clear
 ```
 
 or:
 
 ```text
-agyc C:\project> clear
+antigyc C:\project> clear
 ```
 
 ## License

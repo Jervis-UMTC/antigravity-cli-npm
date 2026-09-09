@@ -122,8 +122,8 @@ function writeFileCall(file, content) {
   };
 }
 
-test('interactive prompt uses a minimal agyc shell indicator', () => {
-  assert.equal(promptLabel('C:\\projects\\my-app'), 'agyc C:\\projects\\my-app> ');
+test('interactive prompt uses a minimal antigyc shell indicator', () => {
+  assert.equal(promptLabel('C:\\projects\\my-app'), 'antigyc C:\\projects\\my-app> ');
 });
 
 test('normal Google use bootstraps authentication once without a separate login command', async () => {

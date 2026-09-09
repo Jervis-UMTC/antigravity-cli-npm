@@ -316,7 +316,7 @@ function historyToContents(messages) {
 export class CodingAgent {
   constructor({ workspace, displayWorkspace, tools, apiKey, model, baseUrl, reasoning = 'auto', history = [], fetchImpl = globalThis.fetch, onActivity = () => {} }) {
     if (!apiKey) {
-      throw new Error('Missing GEMINI_API_KEY. Set it in your environment before starting agyc.');
+      throw new Error('Missing GEMINI_API_KEY. Set it in your environment before starting antigyc.');
     }
 
     this.workspace = workspace;

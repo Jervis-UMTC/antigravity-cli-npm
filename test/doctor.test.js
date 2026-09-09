@@ -6,11 +6,11 @@ import test from 'node:test';
 import { renderDoctor, runDoctor } from '../src/doctor.js';
 
 test('doctor prints plain actionable health lines without UI chrome', async () => {
-  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agyc-doctor-workspace-'));
-  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'agyc-doctor-home-'));
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'antigyc-doctor-workspace-'));
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'antigyc-doctor-home-'));
   try {
     const execImpl = async (executable) => {
-      if (executable === 'where.exe') return { stdout: 'C:\\npm\\agyc.cmd\r\n', stderr: '' };
+      if (executable === 'where.exe') return { stdout: 'C:\\npm\\antigyc.cmd\r\n', stderr: '' };
       if (executable === 'cmd.exe') return { stdout: '11.6.1\r\n', stderr: '' };
       throw new Error('unexpected executable');
     };
@@ -28,7 +28,7 @@ test('doctor prints plain actionable health lines without UI chrome', async () =
     });
     assert.equal(report.ok, true);
     const text = renderDoctor(report);
-    assert.match(text, /^agyc=ok version=0\.1\.0/m);
+    assert.match(text, /^antigyc=ok version=0\.1\.0/m);
     assert.match(text, /node=ok version=20\.19\.0/);
     assert.match(text, /provider=ok state=ready version=1\.2\.3/);
     assert.match(text, /google-account=ok state=connected/);
@@ -42,8 +42,8 @@ test('doctor prints plain actionable health lines without UI chrome', async () =
 });
 
 test('doctor returns a failing status for an unsupported Node runtime', async () => {
-  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agyc-doctor-old-node-'));
-  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'agyc-doctor-old-home-'));
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'antigyc-doctor-old-node-'));
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'antigyc-doctor-old-home-'));
   try {
     const report = await runDoctor({
       version: '0.1.0',
@@ -54,7 +54,7 @@ test('doctor returns a failing status for an unsupported Node runtime', async ()
       nodeVersion: '18.20.0',
       execImpl: async (executable) => executable === 'npm'
         ? { stdout: '10.0.0\n', stderr: '' }
-        : { stdout: '/usr/bin/agyc\n', stderr: '' },
+        : { stdout: '/usr/bin/antigyc\n', stderr: '' },
       fetchImpl: async () => ({ status: 503 }),
       runtimeLoader: async () => ({ backend: 'missing', account: 'unknown', version: null }),
       provenanceLoader: async () => ({ status: 'missing' })

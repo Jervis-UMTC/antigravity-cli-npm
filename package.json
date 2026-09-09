@@ -1,10 +1,10 @@
 {
-  "name": "agyc",
-  "version": "0.1.0",
+  "name": "antigyc",
+  "version": "0.1.1",
   "description": "A minimal CMD-style AI coding agent that works in the project where it is launched.",
   "type": "module",
   "bin": {
-    "agyc": "bin/agy.js"
+    "antigyc": "bin/agy.js"
   },
   "files": [
     "bin",
@@ -28,7 +28,7 @@
   },
   "keywords": [
     "ai",
-    "agyc",
+    "antigyc",
     "antigravity",
     "google-antigravity",
     "cli",

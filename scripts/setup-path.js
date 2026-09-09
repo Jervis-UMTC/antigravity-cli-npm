@@ -111,9 +111,9 @@ export function configureWindowsPath({
 export function main() {
   const result = configureWindowsPath();
   if (result.ok && result.changed) {
-    process.stdout.write(`agyc: added ${result.target} to your user PATH. Open a new terminal once.\n`);
+    process.stdout.write(`antigyc: added ${result.target} to your user PATH. Open a new terminal once.\n`);
   } else if (!result.ok) {
-    process.stderr.write(`agyc: could not update your user PATH automatically: ${result.error?.message || 'unknown error'}\n`);
+    process.stderr.write(`antigyc: could not update your user PATH automatically: ${result.error?.message || 'unknown error'}\n`);
   }
 }
 

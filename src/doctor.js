@@ -47,7 +47,7 @@ async function networkReachable(fetchImpl = globalThis.fetch) {
   const timer = setTimeout(() => controller.abort(), 5_000);
   timer.unref?.();
   try {
-    const response = await fetchImpl('https://registry.npmjs.org/agyc', {
+    const response = await fetchImpl('https://registry.npmjs.org/antigyc', {
       method: 'HEAD',
       signal: controller.signal
     });
@@ -79,7 +79,7 @@ export async function runDoctor({
     lines.push(`${name}=${status}${detail ? ` ${detail}` : ''}`);
   };
 
-  add('agyc', 'ok', `version=${version}`);
+  add('antigyc', 'ok', `version=${version}`);
   const nodeOk = parseMajor(nodeVersion) >= 20;
   add('node', nodeOk ? 'ok' : 'fail', `version=${nodeVersion}`);
 
@@ -102,8 +102,8 @@ export async function runDoctor({
     add('state', 'fail', `not-writable path=${state}`);
   }
 
-  const command = await commandPath('agyc', { platform, execImpl });
-  add('command', command ? 'ok' : 'warn', command ? `path=${command}` : 'agyc-not-on-PATH; local/npx use can still work');
+  const command = await commandPath('antigyc', { platform, execImpl });
+  add('command', command ? 'ok' : 'warn', command ? `path=${command}` : 'antigyc-not-on-PATH; local/npx use can still work');
 
   const runtime = await runtimeLoader().catch(() => ({ backend: 'broken', account: 'unknown', version: null }));
   const binaryPath = officialAntigravityBinaryPath({ platform, env, home });

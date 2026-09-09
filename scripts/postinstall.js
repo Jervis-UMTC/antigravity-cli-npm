@@ -23,13 +23,13 @@ export async function provisionInstall({
   try {
     pathResult = configurePath({ platform, env });
     if (pathResult?.ok && pathResult.changed) {
-      write(stdout, `agyc: added ${pathResult.target} to your user PATH. Open a new terminal once.\n`);
+      write(stdout, `antigyc: added ${pathResult.target} to your user PATH. Open a new terminal once.\n`);
     } else if (pathResult && !pathResult.ok) {
-      write(stderr, `agyc: could not update your user PATH automatically: ${pathResult.error?.message || 'unknown error'}\n`);
+      write(stderr, `antigyc: could not update your user PATH automatically: ${pathResult.error?.message || 'unknown error'}\n`);
     }
   } catch (error) {
     pathResult = { ok: false, changed: false, error };
-    write(stderr, `agyc: could not update your user PATH automatically: ${error instanceof Error ? error.message : String(error)}\n`);
+    write(stderr, `antigyc: could not update your user PATH automatically: ${error instanceof Error ? error.message : String(error)}\n`);
   }
 
   if (enabled(env.AGYC_SKIP_PROVIDER_INSTALL)) {
@@ -42,7 +42,7 @@ export async function provisionInstall({
   } catch (error) {
     // Keep npm installation usable for API-key/offline cases. Google mode will
     // retry the same official backend bootstrap automatically on first use.
-    write(stderr, 'agyc: Google backend preinstall was deferred; the first Google request will retry automatically.\n');
+    write(stderr, 'antigyc: Google backend preinstall was deferred; the first Google request will retry automatically.\n');
     return { path: pathResult, backend: 'deferred', binary: null, error };
   }
 }
@@ -54,6 +54,6 @@ export async function main() {
 const invokedAsScript = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (invokedAsScript) {
   main().catch((error) => {
-    process.stderr.write(`agyc: install bootstrap could not complete: ${error instanceof Error ? error.message : String(error)}\n`);
+    process.stderr.write(`antigyc: install bootstrap could not complete: ${error instanceof Error ? error.message : String(error)}\n`);
   });
 }
