@@ -1,6 +1,7 @@
 import { directAttachmentParts } from './attachments.js';
 import { conversationForModel } from './history.js';
 import { isCancellation, throwIfAborted } from './cancel.js';
+import { createEventSink } from './events.js';
 
 const DEFAULT_MODEL = 'gemini-3.8-flash';
 const DEFAULT_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
@@ -314,7 +315,7 @@ function historyToContents(messages) {
 }
 
 export class CodingAgent {
-  constructor({ workspace, displayWorkspace, tools, apiKey, model, baseUrl, reasoning = 'auto', history = [], fetchImpl = globalThis.fetch, onActivity = () => {} }) {
+  constructor({ workspace, displayWorkspace, tools, apiKey, model, baseUrl, reasoning = 'auto', history = [], fetchImpl = globalThis.fetch, onActivity = () => {}, onEvent = () => {} }) {
     if (!apiKey) {
       throw new Error('Missing GEMINI_API_KEY. Set it in your environment before starting antigyc.');
     }
@@ -330,6 +331,7 @@ export class CodingAgent {
     this.history = historyToContents(history);
     this.resolvedModel = null;
     this.onActivity = typeof onActivity === 'function' ? onActivity : () => {};
+    this.emitEvent = createEventSink(typeof onEvent === 'function' ? onEvent : () => {});
   }
 
   setModel(model) {
@@ -363,7 +365,10 @@ export class CodingAgent {
       let stagnationNudged = false;
       for (let step = 0; step < MAX_STEPS; step += 1) {
         throwIfAborted(signal);
-        if (step === 0) this.onActivity('Inspecting');
+        if (step === 0) {
+          this.onActivity('Inspecting');
+          this.emitEvent('phase_changed', { phase: 'Inspecting project' });
+        }
         const content = await this.#generate(signal);
         const parts = content.parts || [];
         const calls = parts.filter((part) => part.functionCall).map((part) => part.functionCall);
@@ -399,20 +404,50 @@ export class CodingAgent {
         const callNames = new Set(calls.map((call) => call.name));
         const mutationCalls = ['write_file', 'replace_in_file', 'apply_patch', 'delete_path'];
         const verificationCalls = ['run_command', 'run_process', 'git_diff', 'read_file'];
-        if (mutationCalls.some((name) => callNames.has(name))) this.onActivity('Working');
-        else if (latestMutation >= 0 && verificationCalls.some((name) => callNames.has(name))) this.onActivity('Checking');
-        else this.onActivity('Inspecting');
+        if (mutationCalls.some((name) => callNames.has(name))) {
+          this.onActivity('Editing files');
+          this.emitEvent('phase_changed', { phase: 'Editing files' });
+        } else if (latestMutation >= 0 && verificationCalls.some((name) => callNames.has(name))) {
+          this.onActivity('Verifying changes');
+          this.emitEvent('verification', { phase: 'Verifying changes' });
+        } else if (callNames.has('run_command') || callNames.has('run_process')) {
+          this.onActivity('Running checks');
+          this.emitEvent('test_started');
+        } else {
+          this.onActivity('Inspecting project');
+        }
 
         const responses = [];
         const batchEvidence = [];
         for (const call of calls) {
           operationIndex += 1;
+          if (['write_file', 'replace_in_file', 'apply_patch', 'delete_path'].includes(call.name)) {
+            const target = call.args?.path || call.args?.file || call.args?.target;
+            this.onActivity(target ? `Editing ${String(target)}` : 'Editing files');
+          } else if (['run_command', 'run_process'].includes(call.name)) {
+            const command = call.args?.command;
+            this.onActivity(command ? `Running ${String(command).slice(0, 48)}` : 'Running checks');
+          } else {
+            this.onActivity('Inspecting project');
+          }
           let result;
           try {
+            if (call.name === 'run_command' || call.name === 'run_process') {
+              this.emitEvent('command_started', { command: call.args?.command || call.args?.executable });
+            }
             result = await this.tools.execute(call.name, call.args || {}, { signal });
           } catch (error) {
             if (isCancellation(error) || signal?.aborted) throw error;
             result = `Tool error: ${error instanceof Error ? error.message : String(error)}`;
+          }
+
+          if (call.name === 'run_command' || call.name === 'run_process') {
+            this.emitEvent('command_finished', { command: call.args?.command || call.args?.executable, success: !String(result).startsWith('Tool error:') });
+            this.emitEvent('test_finished', { success: !String(result).startsWith('Tool error:') });
+          }
+          if (['write_file', 'replace_in_file', 'apply_patch', 'delete_path'].includes(call.name)) {
+            const eventType = call.name === 'delete_path' ? 'file_deleted' : (call.name === 'write_file' ? 'file_created' : 'file_modified');
+            this.emitEvent(eventType, { path: call.args?.path });
           }
 
           const resultText = String(result ?? '');

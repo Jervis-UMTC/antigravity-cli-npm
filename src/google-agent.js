@@ -782,7 +782,8 @@ export class GoogleAccountAgent {
     yes = false,
     history = [],
     backend = {},
-    onActivity = () => {}
+    onActivity = () => {},
+    onEvent = () => {}
   }) {
     this.workspace = workspace;
     this.displayWorkspace = displayWorkspace || workspace;
@@ -795,6 +796,7 @@ export class GoogleAccountAgent {
     this.captureBackend = backend.capture || captureExecutable;
     this.modelsLoader = backend.models || discoverOfficialAntigravityModels;
     this.onActivity = typeof onActivity === 'function' ? onActivity : () => {};
+    this.onEvent = typeof onEvent === 'function' ? onEvent : () => {};
   }
 
   setModel(model) {
@@ -835,6 +837,8 @@ export class GoogleAccountAgent {
       attachments,
       conversationId: this.conversationId
     });
+    this.onActivity('Executing');
+    this.onEvent('phase_changed', { phase: 'Executing' });
     const result = await this.captureBackend(binary, args, {
       cwd: this.workspace,
       env: googleAccountEnv(process.env),

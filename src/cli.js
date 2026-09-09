@@ -3,7 +3,8 @@ import path from 'node:path';
 import readline from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 import { CodingAgent, defaults, discoverApiModels } from './agent.js';
-import { createActivityIndicator } from './activity.js';
+import { createActivityIndicator, renderActivityEvent } from './activity.js';
+import { createEventSink } from './events.js';
 import { attachmentSummary, resolveAttachment } from './attachments.js';
 import { isCancellation } from './cancel.js';
 import { renderDoctor, runDoctor } from './doctor.js';
@@ -150,7 +151,7 @@ export function createGoogleAuthBootstrap(options, {
   };
 }
 
-async function buildAgent(options, rl, stagedWorkspace, displayWorkspace, history = [], getActivity = () => null) {
+async function buildAgent(options, rl, stagedWorkspace, displayWorkspace, history = [], getActivity = () => null, onEvent = () => {}) {
   const authMode = resolveAuthMode(options);
 
   if (authMode === 'google') {
@@ -161,7 +162,8 @@ async function buildAgent(options, rl, stagedWorkspace, displayWorkspace, histor
       reasoning: options.reasoning,
       yes: options.yes,
       history,
-      onActivity: (phase) => getActivity()?.setPhase?.(phase)
+      onActivity: (phase) => getActivity()?.setPhase?.(phase),
+      onEvent
     });
   }
 
@@ -192,7 +194,8 @@ async function buildAgent(options, rl, stagedWorkspace, displayWorkspace, histor
     reasoning: options.reasoning,
     baseUrl: options.baseUrl,
     history,
-    onActivity: (phase) => getActivity()?.setPhase?.(phase)
+    onActivity: (phase) => getActivity()?.setPhase?.(phase),
+    onEvent
   });
 }
 
@@ -295,7 +298,9 @@ async function executeAgentTask({
     }
 
     activity?.setPhase('Inspecting');
-    const agent = await buildAgent(options, rl, staging.workspace, workspace, conversation, () => activity);
+    const agent = await buildAgent(options, rl, staging.workspace, workspace, conversation, () => activity, createEventSink((event) => {
+      if (event) output.write(`${renderActivityEvent(event)}\n`);
+    }));
     const answer = await agent.prompt(modelPrompt, {
       attachments: stagedAttachments,
       signal: controller?.signal

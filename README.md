@@ -202,6 +202,31 @@ The agent performs project edits in a private OS-temporary staging copy and publ
 
 > This repository is an npm implementation. It is not the proprietary Google Antigravity CLI binary.
 
+## Live agent workflow
+
+While working, `antigyc` reports safe progress events from the coding workflow. The output stays plain terminal text and does not expose private reasoning, provider internals, or secrets.
+
+Typical progress looks like:
+
+```text
+Inspecting project
+Editing: src/app.js
+Created: src/auth/session.js
+Running: npm test
+Verification: checking changes
+Tests passed
+```
+
+The workflow is:
+
+1. Inspect the project.
+2. Make changes in the protected staging workspace.
+3. Report safe file and command activity.
+4. Run available checks and tests.
+5. Repair failures when possible.
+6. Apply completed changes only after verification succeeds.
+7. Return a final response ending with `Summary`.
+
 ## Key behavior
 
 - Works in **Git repositories and ordinary non-Git folders**.

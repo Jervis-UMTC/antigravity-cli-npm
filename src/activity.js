@@ -75,6 +75,13 @@ export function createActivityIndicator(stream, {
       fixedMessage = String(message || '').trim() || null;
       if (enabled && !paused) render();
     },
+    emit(event) {
+      if (stopped || !event) return;
+      const type = String(event.type || '').trim();
+      if (type === 'check') this.setPhase('Verifying changes');
+      if (type === 'command') this.setPhase('Running checks');
+      if (type === 'file') this.setPhase('Editing files');
+    },
     pause() {
       if (!enabled || paused || stopped) return;
       paused = true;
@@ -99,3 +106,17 @@ export const activityDefaults = {
   delayMs: DEFAULT_DELAY_MS,
   intervalMs: DEFAULT_INTERVAL_MS
 };
+
+export function renderActivityEvent(event) {
+  if (!event) return '';
+  if (event.type === 'file_created') return `Created: ${event.path}`;
+  if (event.type === 'file_modified') return `Editing: ${event.path}`;
+  if (event.type === 'file_deleted') return `Deleted: ${event.path}`;
+  if (event.type === 'command_started') return `Running: ${event.command}`;
+  if (event.type === 'command_finished') return `Finished: ${event.command}${event.success ? '' : ' (failed)'}`;
+  if (event.type === 'test_started') return 'Running tests';
+  if (event.type === 'test_finished') return `Tests ${event.success ? 'passed' : 'failed'}`;
+  if (event.type === 'verification') return 'Verification: checking changes';
+  if (event.type === 'phase_changed') return event.phase || 'Working';
+  return '';
+}
