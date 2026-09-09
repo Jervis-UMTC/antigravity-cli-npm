@@ -95,8 +95,9 @@ test('official Antigravity backend auto-install stays outside PATH and honors it
     });
     assert.equal(installed, binaryPath);
     assert.equal(invocation.executable, 'cmd.exe');
-    assert.match(invocation.args.at(-1), /--skip-path --skip-aliases/);
-    assert.match(invocation.args.at(-1), /--dir/);
+    assert.deepEqual(invocation.args.slice(0, 3), ['/d', '/c', invocation.args[2]]);
+    assert.match(invocation.args[2], /agy-google-backend-.*\.cmd$/);
+    assert.deepEqual(invocation.args.slice(3), ['--dir', path.dirname(binaryPath), '--skip-path', '--skip-aliases']);
 
     let installs = 0;
     assert.equal(await ensureOfficialAntigravityCli({
@@ -501,6 +502,10 @@ test('GoogleAccountAgent executes through official Antigravity headless mode and
   assert.deepEqual(calls[0].args.slice(calls[0].args.indexOf('--model'), calls[0].args.indexOf('--model') + 2), ['--model', 'gemini-3.8-flash']);
   assert.deepEqual(calls[0].args.slice(calls[0].args.indexOf('--effort'), calls[0].args.indexOf('--effort') + 2), ['--effort', 'high']);
   assert.ok(calls[0].args.includes('--dangerously-skip-permissions'));
+  const firstPrompt = calls[0].args[calls[0].args.indexOf('-p') + 1];
+  assert.match(firstPrompt, /Operate autonomously/);
+  assert.match(firstPrompt, /Do not stop at the first failed check/);
+  assert.match(firstPrompt, /run appropriate tests\/build\/lint\/type checks/);
   assert.equal(calls[0].options.env.GOOGLE_GENAI_USE_GCA, undefined);
   assert.deepEqual(calls[1].args.slice(calls[1].args.indexOf('--conversation'), calls[1].args.indexOf('--conversation') + 2), ['--conversation', 'conversation-123']);
 });

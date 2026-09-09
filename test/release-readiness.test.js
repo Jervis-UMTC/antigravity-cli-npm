@@ -18,6 +18,7 @@ test('release metadata is explicit and production files include hardening module
   assert.equal(pkg.bugs.url, 'https://github.com/Jervis-UMTC/antigravity-cli-npm/issues');
   assert.equal(pkg.homepage, 'https://github.com/Jervis-UMTC/antigravity-cli-npm#readme');
   assert.match(pkg.scripts['release:check'], /npm publish --dry-run --ignore-scripts --json/);
+  assert.equal(pkg.scripts.postinstall, 'node scripts/postinstall.js');
   assert.equal(pkg.bin.agyc, 'bin/agy.js');
   assert.equal(pkg.bin['antigravity-cli-npm'], 'bin/agy.js');
   assert.equal(pkg.bin.agy, undefined);
@@ -44,7 +45,7 @@ test('release metadata is explicit and production files include hardening module
   }
 
   assert.ok(pkg.files.includes('LICENSE'));
-  for (const file of ['LICENSE', 'src/settings.js', 'src/init.js', 'src/cancel.js']) {
+  for (const file of ['LICENSE', 'src/settings.js', 'src/init.js', 'src/cancel.js', 'scripts/postinstall.js']) {
     await fs.access(path.join(ROOT, file));
   }
 });

@@ -38,6 +38,40 @@ test('run_command respects approval', async () => {
   await fs.rm(workspace, { recursive: true, force: true });
 });
 
+test('project_overview gives compact repository context without command approval', async () => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-overview-'));
+  try {
+    await fs.mkdir(path.join(workspace, 'src'));
+    await fs.writeFile(path.join(workspace, 'src', 'app.js'), 'console.log("ok");\n', 'utf8');
+    await fs.writeFile(path.join(workspace, 'package.json'), JSON.stringify({
+      name: 'overview-fixture',
+      version: '1.2.3',
+      scripts: { test: 'node --test', lint: 'eslint .' }
+    }), 'utf8');
+    const tools = await createTools({ workspace, approveCommand: async () => false });
+    const overview = await tools.execute('project_overview', {});
+    assert.match(overview, /overview-fixture@1\.2\.3/);
+    assert.match(overview, /scripts: test, lint/);
+    assert.match(overview, /\[dir\] src/);
+    assert.match(overview, /\.js:1/);
+  } finally {
+    await fs.rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test('large file reads are bounded and point the agent to line ranges', async () => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-read-bound-'));
+  try {
+    await fs.writeFile(path.join(workspace, 'large.txt'), `${'x'.repeat(200)}\n`.repeat(1000), 'utf8');
+    const tools = await createTools({ workspace });
+    const result = await tools.execute('read_file', { path: 'large.txt' });
+    assert.ok(result.length < 121_000);
+    assert.match(result, /file read truncated; use start_line\/end_line/);
+  } finally {
+    await fs.rm(workspace, { recursive: true, force: true });
+  }
+});
+
 test('aborted tool execution does not start a shell command', async () => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-tools-abort-'));
   try {

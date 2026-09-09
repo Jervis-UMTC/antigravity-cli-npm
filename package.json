@@ -17,9 +17,9 @@
   ],
   "scripts": {
     "prepare": "node scripts/setup-path.js",
-    "postinstall": "node scripts/setup-path.js",
+    "postinstall": "node scripts/postinstall.js",
     "test": "node --test",
-    "check": "node --check bin/agy.js && node --check src/cli.js && node --check src/activity.js && node --check src/agent.js && node --check src/attachments.js && node --check src/cancel.js && node --check src/history.js && node --check src/google-agent.js && node --check src/init.js && node --check src/settings.js && node --check src/staging.js && node --check src/tools.js && node --check scripts/setup-path.js",
+    "check": "node --check bin/agy.js && node --check src/cli.js && node --check src/activity.js && node --check src/agent.js && node --check src/attachments.js && node --check src/cancel.js && node --check src/history.js && node --check src/google-agent.js && node --check src/init.js && node --check src/settings.js && node --check src/staging.js && node --check src/tools.js && node --check scripts/setup-path.js && node --check scripts/postinstall.js",
     "release:check": "npm run check && npm test && npm audit --audit-level=moderate && npm pack --dry-run --ignore-scripts && npm publish --dry-run --ignore-scripts --json",
     "prepublishOnly": "npm run release:check"
   },

@@ -7,11 +7,12 @@ import { isCancellation, throwIfAborted } from './cancel.js';
 const exec = promisify(execCallback);
 const DEFAULT_IGNORES = new Set(['.git', 'node_modules', 'dist', 'build', '.next', 'coverage', '.cache']);
 const MAX_FILE_BYTES = 1024 * 1024;
+const MAX_FILE_OUTPUT = 120_000;
 const MAX_COMMAND_OUTPUT = 80_000;
 
-function clip(text, max = MAX_COMMAND_OUTPUT) {
+function clip(text, max = MAX_COMMAND_OUTPUT, suffix = null) {
   if (text.length <= max) return text;
-  return `${text.slice(0, max)}\n...[truncated ${text.length - max} chars]`;
+  return `${text.slice(0, max)}\n${suffix || `...[truncated ${text.length - max} chars]`}`;
 }
 
 function inside(root, candidate) {
@@ -84,6 +85,54 @@ export async function createTools({ workspace, approveCommand = async () => fals
   const resolveSafe = await createResolver(root);
 
   const handlers = {
+    async project_overview() {
+      const topLevel = (await fs.readdir(root, { withFileTypes: true }))
+        .filter((entry) => !DEFAULT_IGNORES.has(entry.name))
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .slice(0, 80)
+        .map((entry) => `${entry.isDirectory() ? '[dir] ' : ''}${entry.name}`);
+      const entries = await walkFiles(root, root, 5000);
+      const files = entries.filter(({ entry }) => entry.isFile());
+      const extensions = new Map();
+      for (const { relative } of files) {
+        const ext = path.extname(relative).toLowerCase() || '[none]';
+        extensions.set(ext, (extensions.get(ext) || 0) + 1);
+      }
+      const commonTypes = [...extensions.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 12)
+        .map(([ext, count]) => `${ext}:${count}`)
+        .join(', ');
+
+      let packageInfo = '';
+      try {
+        const pkg = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8'));
+        const scripts = Object.keys(pkg.scripts || {});
+        packageInfo = `package: ${pkg.name || '(unnamed)'}${pkg.version ? `@${pkg.version}` : ''}\nscripts: ${scripts.length ? scripts.join(', ') : '(none)'}`;
+      } catch {}
+
+      let git = '(not a Git repository or Git unavailable)';
+      try {
+        const { stdout, stderr } = await exec('git status --short --branch', {
+          cwd: root,
+          timeout: 10_000,
+          windowsHide: true,
+          maxBuffer: 1024 * 1024,
+          env: process.env
+        });
+        git = [stdout, stderr].filter(Boolean).join('').trim() || '(clean Git repository)';
+      } catch {}
+
+      return clip([
+        `root: ${root}`,
+        `files scanned: ${files.length}${entries.length >= 5000 ? '+' : ''}`,
+        `common file types: ${commonTypes || '(none)'}`,
+        packageInfo,
+        `git:\n${git}`,
+        `top level:\n${topLevel.join('\n') || '(empty)'}`
+      ].filter(Boolean).join('\n\n'), 20_000);
+    },
+
     async list_files(args) {
       const start = await resolveSafe(args.path || '.');
       const maxEntries = Math.min(Math.max(Number(args.max_entries) || 300, 1), 2000);
@@ -101,7 +150,8 @@ export async function createTools({ workspace, approveCommand = async () => fals
       const lines = text.split(/\r?\n/);
       const start = Math.max((Number(args.start_line) || 1) - 1, 0);
       const end = Math.min(Number(args.end_line) || lines.length, lines.length);
-      return lines.slice(start, end).map((line, index) => `${start + index + 1}: ${line}`).join('\n');
+      const rendered = lines.slice(start, end).map((line, index) => `${start + index + 1}: ${line}`).join('\n');
+      return clip(rendered, MAX_FILE_OUTPUT, '...[file read truncated; use start_line/end_line to request a narrower range]');
     },
 
     async write_file(args) {
@@ -195,7 +245,7 @@ export async function createTools({ workspace, approveCommand = async () => fals
       const approved = await approveCommand(command, path.relative(root, cwd) || '.');
       if (!approved) return 'Command denied by user.';
 
-      const timeout = Math.min(Math.max(Number(args.timeout_ms) || 120000, 1000), 600000);
+      const timeout = Math.min(Math.max(Number(args.timeout_ms) || 120000, 1000), 900000);
       try {
         const { stdout, stderr } = await exec(command, {
           cwd,

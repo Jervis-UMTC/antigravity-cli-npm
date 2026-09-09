@@ -4,10 +4,21 @@ import { isCancellation, throwIfAborted } from './cancel.js';
 
 const DEFAULT_MODEL = 'gemini-2.5-pro';
 const DEFAULT_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
-const MAX_STEPS = 20;
+const MAX_STEPS = 60;
+const MAX_TOOL_RESULT_CHARS = 24_000;
+const MAX_MODEL_RETRIES = 3;
+const STAGNATION_NUDGE_AFTER = 3;
+const STAGNATION_FAIL_AFTER = 6;
+const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504]);
+const RETRY_DELAYS_MS = [500, 1500, 3000];
 const REASONING_BUDGETS = { low: 1024, high: 8192 };
 
 const functionDeclarations = [
+  {
+    name: 'project_overview',
+    description: 'Get a compact overview of the project structure, common manifests, package scripts, language/file counts, and Git status. Prefer this early for broad repository tasks.',
+    parameters: { type: 'OBJECT', properties: {} }
+  },
   {
     name: 'list_files',
     description: 'List files and directories in the current project. Generated and dependency directories are skipped by default.',
@@ -109,7 +120,7 @@ const functionDeclarations = [
 ];
 
 function systemPrompt(workspace) {
-  return `You are a coding agent operating in this project:\n${workspace}\n\nUse the provided tools to inspect, edit, test, and debug the project. Work only inside the project unless the user explicitly asks for a shell command that does otherwise and the command is approved. Inspect relevant files before editing. Prefer focused edits over rewriting whole files. Run appropriate checks after meaningful changes. Never claim a command passed unless you ran it and saw the result. Keep terminal responses concise and practical. Do not expose internal reasoning or tool-by-tool activity. When the task is complete, summarize the result and validation performed.`;
+  return `You are an autonomous coding agent operating in this project:\n${workspace}\n\nUse the provided tools to inspect, edit, test, and debug the project until the user's request is actually complete. For broad tasks, map the repository first with project_overview and targeted searches rather than dumping the whole tree. Maintain an internal plan and update it as evidence changes, but never expose private reasoning or tool-by-tool activity. Work only inside the project unless the user explicitly asks for a shell command that does otherwise and the command is approved. Inspect relevant files before editing. Prefer focused edits over rewriting whole files. After meaningful changes, inspect the resulting diff/files and run the most relevant available checks. If a check fails, diagnose it, make evidence-backed fixes, and rerun it instead of stopping at the first failure. Never claim a command passed unless you ran it and saw the result. Do not declare completion immediately after editing without a post-edit verification pass. Keep the final terminal response concise and practical, summarizing the result and validation performed.`;
 }
 
 function normalizeBaseUrl(value) {
@@ -192,6 +203,37 @@ function getText(parts = []) {
     .trim();
 }
 
+function compactToolResult(value) {
+  const text = String(value ?? '');
+  if (text.length <= MAX_TOOL_RESULT_CHARS) return text;
+  const tailChars = Math.floor(MAX_TOOL_RESULT_CHARS / 3);
+  const headChars = MAX_TOOL_RESULT_CHARS - tailChars;
+  return `${text.slice(0, headChars)}\n...[tool output truncated ${text.length - MAX_TOOL_RESULT_CHARS} chars; showing final section below; request a narrower read/search or rerun a focused command if more detail is needed]...\n${text.slice(-tailChars)}`;
+}
+
+function waitForRetry(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason || new DOMException('Aborted', 'AbortError'));
+      return;
+    }
+    let timer = null;
+    const cleanup = () => {
+      if (timer) clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+    };
+    const onAbort = () => {
+      cleanup();
+      reject(signal.reason || new DOMException('Aborted', 'AbortError'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+  });
+}
+
 function historyToContents(messages) {
   return conversationForModel(messages).map((message) => ({
     role: message.role === 'assistant' ? 'model' : 'user',
@@ -243,6 +285,13 @@ export class CodingAgent {
 
     try {
       let emptyFinalRecoveryUsed = false;
+      let verificationNudges = 0;
+      let operationIndex = 0;
+      let latestMutation = -1;
+      let latestVerification = -1;
+      let lastBatchSignature = null;
+      let identicalBatchCount = 0;
+      let stagnationNudged = false;
       for (let step = 0; step < MAX_STEPS; step += 1) {
         throwIfAborted(signal);
         const content = await this.#generate(signal);
@@ -252,7 +301,20 @@ export class CodingAgent {
 
         if (calls.length === 0) {
           const answer = getText(parts);
-          if (answer) return answer;
+          if (answer) {
+            if (latestMutation >= 0 && latestVerification < latestMutation) {
+              if (verificationNudges >= 2) {
+                throw new Error('Agent edited the project but did not perform a successful post-edit verification pass.');
+              }
+              verificationNudges += 1;
+              this.history.push({
+                role: 'user',
+                parts: [{ text: 'Before finalizing, perform a post-edit verification pass. Inspect the changed files or diff and run the most relevant available test, build, lint, typecheck, or other check. If no runnable check exists, inspect the changed result directly and then return the final response.' }]
+              });
+              continue;
+            }
+            return answer;
+          }
           if (!emptyFinalRecoveryUsed) {
             emptyFinalRecoveryUsed = true;
             this.history.push({
@@ -265,7 +327,9 @@ export class CodingAgent {
         }
 
         const responses = [];
+        const batchEvidence = [];
         for (const call of calls) {
+          operationIndex += 1;
           let result;
           try {
             result = await this.tools.execute(call.name, call.args || {}, { signal });
@@ -274,15 +338,41 @@ export class CodingAgent {
             result = `Tool error: ${error instanceof Error ? error.message : String(error)}`;
           }
 
+          const resultText = String(result ?? '');
+          const toolSucceeded = !/^(?:Tool error:|Command failed\.|Command denied by user\.)/.test(resultText);
+          if (toolSucceeded && ['write_file', 'replace_in_file', 'delete_path'].includes(call.name)) {
+            latestMutation = operationIndex;
+          } else if (toolSucceeded && ['run_command', 'git_diff', 'read_file'].includes(call.name) && latestMutation >= 0) {
+            latestVerification = operationIndex;
+          }
+
           responses.push({
             functionResponse: {
               name: call.name,
-              response: { result }
+              response: { result: compactToolResult(result) }
             }
           });
+          batchEvidence.push({ name: call.name, args: call.args || {}, result: compactToolResult(result) });
         }
 
         this.history.push({ role: 'user', parts: responses });
+        const batchSignature = JSON.stringify(batchEvidence);
+        if (batchSignature === lastBatchSignature) identicalBatchCount += 1;
+        else {
+          lastBatchSignature = batchSignature;
+          identicalBatchCount = 1;
+          stagnationNudged = false;
+        }
+        if (identicalBatchCount >= STAGNATION_FAIL_AFTER) {
+          throw new Error('Agent repeated the same tool action without making progress.');
+        }
+        if (identicalBatchCount >= STAGNATION_NUDGE_AFTER && !stagnationNudged) {
+          stagnationNudged = true;
+          this.history.push({
+            role: 'user',
+            parts: [{ text: 'The same tool action has produced the same result repeatedly. Do not repeat it again unchanged. Reassess the evidence and use a different inspection, edit, command, or narrower query to make progress.' }]
+          });
+        }
       }
 
       throw new Error(`Agent exceeded ${MAX_STEPS} tool steps without finishing.`);
@@ -305,7 +395,7 @@ export class CodingAgent {
     const generationConfig = { temperature: 0.2 };
     if (thinkingConfig) generationConfig.thinkingConfig = thinkingConfig;
 
-    const response = await this.fetchImpl(url, {
+    const request = {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
@@ -315,21 +405,40 @@ export class CodingAgent {
         generationConfig
       }),
       signal
-    });
+    };
 
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      const detail = body?.error?.message || `${response.status} ${response.statusText}`;
-      throw new Error(`Model request failed: ${detail}`);
+    let lastError = null;
+    for (let attempt = 0; attempt <= MAX_MODEL_RETRIES; attempt += 1) {
+      throwIfAborted(signal);
+      let response;
+      try {
+        response = await this.fetchImpl(url, request);
+      } catch (error) {
+        if (isCancellation(error) || signal?.aborted) throw error;
+        lastError = error;
+        if (attempt === MAX_MODEL_RETRIES) throw error;
+        await waitForRetry(RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length - 1)], signal);
+        continue;
+      }
+
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const detail = body?.error?.message || `${response.status} ${response.statusText}`;
+        const error = new Error(`Model request failed: ${detail}`);
+        if (!RETRYABLE_STATUS.has(response.status) || attempt === MAX_MODEL_RETRIES) throw error;
+        lastError = error;
+        await waitForRetry(RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length - 1)], signal);
+        continue;
+      }
+
+      const content = body?.candidates?.[0]?.content;
+      if (!content) {
+        const reason = body?.promptFeedback?.blockReason || 'empty model response';
+        throw new Error(`Model request failed: ${reason}`);
+      }
+      return content;
     }
-
-    const content = body?.candidates?.[0]?.content;
-    if (!content) {
-      const reason = body?.promptFeedback?.blockReason || 'empty model response';
-      throw new Error(`Model request failed: ${reason}`);
-    }
-
-    return content;
+    throw lastError || new Error('Model request failed.');
   }
 }
 

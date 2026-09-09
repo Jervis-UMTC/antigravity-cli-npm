@@ -11,7 +11,7 @@ Initial release candidate.
 - Minimal CMD-style interactive coding shell with `agyc` and `antigravity-cli-npm` entry points.
 - Hidden transactional editing in an OS-temporary staging copy for Git and non-Git projects.
 - Google subscription execution through Google's official Antigravity CLI headless backend.
-- Automatic isolated provider-backend installation, health validation, and repair without provider PATH takeover.
+- Automatic isolated provider-backend installation, health validation, and repair without provider PATH takeover. npm `postinstall` now pre-provisions the official backend on a machine with no Antigravity installation; first Google use retries automatically if preinstall was offline.
 - Persistent Google account/keyring reuse and post-login subscription verification.
 - Automated first-run Google sign-in driven exclusively by the official Antigravity CLI in a hidden temporary pseudo-terminal; the provider opens its own browser flow and stores its native secure keyring session.
 - Zero-setup normal Google requests: `agyc` automatically ensures the backend and native account session before the first request, so `agyc login` is optional rather than a required setup step.
@@ -30,6 +30,9 @@ Initial release candidate.
 - Moved the package-managed official Antigravity backend into a private per-user data directory instead of a public `agy` command directory.
 - Removed the `(no response)` placeholder. Empty successful provider replies now trigger a same-conversation final-response recovery request and fail explicitly if Google still returns no text.
 - Fixed headless project inspection/tool denial by running normal Google provider tools with auto-permission inside Antigravity's terminal sandbox; explicit `approval yes` retains unrestricted provider auto-permission inside the wrapper's disposable staging workspace.
+- Fixed Windows fresh-machine provider installation by passing the downloaded official `.cmd` installer to `cmd.exe` as discrete arguments instead of a nested quoted command string.
+- Strengthened direct API agent autonomy with a 60-step execution budget, transient model-request retries, head/tail-preserving compact tool-result context, enforced post-edit verification, stagnant-tool-loop detection/replanning, bounded large-file reads, and a compact `project_overview` tool for repository-scale tasks.
+- Strengthened Google subscription task instructions so the official Antigravity backend maps broad repositories, iterates after failed checks, and validates meaningful modifications before finalizing.
 
 ### Safety and isolation
 

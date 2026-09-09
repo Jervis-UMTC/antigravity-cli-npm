@@ -68,3 +68,185 @@ test('direct API recovers an empty final response instead of printing a placehol
   assert.equal(await agent.prompt('check the project'), 'Project checked.');
   assert.equal(calls, 2);
 });
+
+test('direct API can run long autonomous tasks beyond the old 20-step limit', async () => {
+  let calls = 0;
+  const agent = new CodingAgent({
+    workspace: process.cwd(),
+    displayWorkspace: process.cwd(),
+    apiKey: 'test-key',
+    model: 'gemini-3.8-flash',
+    tools: { execute: async (_name, args) => `ok-${args.iteration}` },
+    fetchImpl: async () => {
+      calls += 1;
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return {
+            candidates: [{ content: {
+              role: 'model',
+              parts: calls <= 25
+                ? [{ functionCall: { name: 'project_overview', args: { iteration: calls } } }]
+                : [{ text: 'Long task completed.' }]
+            } }]
+          };
+        }
+      };
+    }
+  });
+
+  assert.equal(await agent.prompt('perform a long task'), 'Long task completed.');
+  assert.equal(calls, 26);
+});
+
+test('direct API detects repeated identical tool loops and asks for a different strategy', async () => {
+  let calls = 0;
+  const bodies = [];
+  const agent = new CodingAgent({
+    workspace: process.cwd(),
+    displayWorkspace: process.cwd(),
+    apiKey: 'test-key',
+    model: 'gemini-3.8-flash',
+    tools: { execute: async () => 'same result' },
+    fetchImpl: async (_url, options) => {
+      calls += 1;
+      bodies.push(JSON.parse(options.body));
+      const parts = calls <= 3
+        ? [{ functionCall: { name: 'search_files', args: { query: 'missing' } } }]
+        : [{ text: 'Changed strategy.' }];
+      return { ok: true, status: 200, async json() { return { candidates: [{ content: { role: 'model', parts } }] }; } };
+    }
+  });
+
+  assert.equal(await agent.prompt('investigate'), 'Changed strategy.');
+  assert.match(JSON.stringify(bodies[3].contents), /Do not repeat it again unchanged/);
+});
+
+test('direct API stops a permanently stagnant tool loop before exhausting the full step budget', async () => {
+  let calls = 0;
+  const agent = new CodingAgent({
+    workspace: process.cwd(),
+    displayWorkspace: process.cwd(),
+    apiKey: 'test-key',
+    model: 'gemini-3.8-flash',
+    tools: { execute: async () => 'same result' },
+    fetchImpl: async () => {
+      calls += 1;
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { candidates: [{ content: { role: 'model', parts: [{ functionCall: { name: 'search_files', args: { query: 'missing' } } }] } }] };
+        }
+      };
+    }
+  });
+
+  await assert.rejects(() => agent.prompt('investigate'), /without making progress/);
+  assert.equal(calls, 6);
+});
+
+test('direct API forces a post-edit verification pass before accepting a final answer', async () => {
+  let calls = 0;
+  const toolCalls = [];
+  const requestBodies = [];
+  const agent = new CodingAgent({
+    workspace: process.cwd(),
+    displayWorkspace: process.cwd(),
+    apiKey: 'test-key',
+    model: 'gemini-3.8-flash',
+    tools: {
+      execute: async (name) => {
+        toolCalls.push(name);
+        return name === 'write_file' ? 'Wrote app.js.' : '1: updated';
+      }
+    },
+    fetchImpl: async (_url, options) => {
+      calls += 1;
+      requestBodies.push(JSON.parse(options.body));
+      const parts = calls === 1
+        ? [{ functionCall: { name: 'write_file', args: { path: 'app.js', content: 'updated' } } }]
+        : calls === 2
+          ? [{ text: 'Done.' }]
+          : calls === 3
+            ? [{ functionCall: { name: 'read_file', args: { path: 'app.js' } } }]
+            : [{ text: 'Updated and verified.' }];
+      return { ok: true, status: 200, async json() { return { candidates: [{ content: { role: 'model', parts } }] }; } };
+    }
+  });
+
+  assert.equal(await agent.prompt('update app.js'), 'Updated and verified.');
+  assert.deepEqual(toolCalls, ['write_file', 'read_file']);
+  assert.match(JSON.stringify(requestBodies[2].contents), /post-edit verification pass/);
+});
+
+test('direct API refuses completion when the model repeatedly ignores post-edit verification', async () => {
+  let calls = 0;
+  const agent = new CodingAgent({
+    workspace: process.cwd(),
+    displayWorkspace: process.cwd(),
+    apiKey: 'test-key',
+    model: 'gemini-3.8-flash',
+    tools: { execute: async () => 'Wrote app.js.' },
+    fetchImpl: async () => {
+      calls += 1;
+      const parts = calls === 1
+        ? [{ functionCall: { name: 'write_file', args: { path: 'app.js', content: 'updated' } } }]
+        : [{ text: 'Done without checking.' }];
+      return { ok: true, status: 200, async json() { return { candidates: [{ content: { role: 'model', parts } }] }; } };
+    }
+  });
+
+  await assert.rejects(
+    () => agent.prompt('update app.js'),
+    /did not perform a successful post-edit verification pass/
+  );
+  assert.equal(calls, 4);
+});
+
+test('direct API retries transient model failures automatically', async () => {
+  let calls = 0;
+  const agent = new CodingAgent({
+    workspace: process.cwd(),
+    displayWorkspace: process.cwd(),
+    apiKey: 'test-key',
+    model: 'gemini-3.8-flash',
+    tools: { execute: async () => '' },
+    fetchImpl: async () => {
+      calls += 1;
+      if (calls === 1) {
+        return { ok: false, status: 503, statusText: 'Unavailable', async json() { return { error: { message: 'busy' } }; } };
+      }
+      return { ok: true, status: 200, async json() { return { candidates: [{ content: { role: 'model', parts: [{ text: 'Recovered.' }] } }] }; } };
+    }
+  });
+
+  assert.equal(await agent.prompt('retry transient failures'), 'Recovered.');
+  assert.equal(calls, 2);
+});
+
+test('direct API compacts oversized tool results before the next model request', async () => {
+  let calls = 0;
+  let secondBody = null;
+  const agent = new CodingAgent({
+    workspace: process.cwd(),
+    displayWorkspace: process.cwd(),
+    apiKey: 'test-key',
+    model: 'gemini-3.8-flash',
+    tools: { execute: async () => 'x'.repeat(60_000) },
+    fetchImpl: async (_url, options) => {
+      calls += 1;
+      if (calls === 2) secondBody = JSON.parse(options.body);
+      const parts = calls === 1
+        ? [{ functionCall: { name: 'project_overview', args: {} } }]
+        : [{ text: 'Done.' }];
+      return { ok: true, status: 200, async json() { return { candidates: [{ content: { role: 'model', parts } }] }; } };
+    }
+  });
+
+  await agent.prompt('inspect project');
+  const result = secondBody.contents.at(-1).parts[0].functionResponse.response.result;
+  assert.ok(result.length < 25_000);
+  assert.match(result, /tool output truncated/);
+});

@@ -32,7 +32,7 @@ The agent works behind that prompt. It performs project edits in a private OS-te
   - a Google/Gemini subscription account through Google's official Antigravity CLI backend, or
   - a Gemini API key in `GEMINI_API_KEY`.
 
-For Google subscription mode, `agyc` uses the official Antigravity CLI only as a hidden headless backend. If that backend is missing, `agyc` installs it into a private per-user data location without adding the provider binary to PATH or claiming Google's existing `agy` command.
+For Google subscription mode, `agyc` uses the official Antigravity CLI only as a hidden headless backend. A normal npm install pre-provisions that backend into a private per-user data location, even when the machine has no Antigravity installation. The provider binary is never added to PATH and never claims this package's `agyc` command. If pre-provisioning was temporarily offline, the first Google request retries the same bootstrap automatically.
 
 ## Try it now from this repository
 
@@ -123,7 +123,7 @@ Global installation:
 npm install -g antigravity-cli-npm
 ```
 
-On Windows, installation automatically adds npm's command directory to the user PATH if it is missing. On the first install, open one new terminal afterward; future terminals can run `agyc` directly with no extra setup.
+On Windows, installation automatically adds npm's command directory to the user PATH if it is missing **and pre-installs the official Antigravity backend privately**. This works on a machine that has never installed Antigravity. On the first global install, open one new terminal afterward so that terminal inherits the updated user PATH; future terminals can run `agyc` directly with no extra setup.
 
 Then:
 
@@ -141,7 +141,7 @@ npx agyc
 
 ## Zero-setup Google account bootstrap
 
-You do **not** need to run `agyc login` before using the CLI. Start `agyc` normally and enter your first request. In Google mode, that request automatically ensures the official backend is installed and healthy, checks the native Antigravity secure session, and starts the official browser sign-in flow only when that device actually needs authentication.
+You do **not** need to install Antigravity separately or run `agyc login` before using the CLI. npm `postinstall` pre-provisions and health-checks the official backend. Start `agyc` normally and enter your first request. In Google mode, that request re-checks/repairs the backend if needed, checks the native Antigravity secure session, and starts the official browser sign-in flow only when that device actually needs authentication.
 
 Google subscription mode now executes through Google's **official Antigravity CLI headless client**, rather than the older Gemini CLI / Code Assist client that rejects personal accounts. The provider binary is invoked by its absolute per-user path, with JSON output captured internally, so its TUI, progress stream, slash commands, banners, and tool narration do not appear inside this wrapper.
 
@@ -150,6 +150,12 @@ The package-managed official backend is deliberately kept out of normal command 
 Authentication is persistent through the official Antigravity secure account session, including Windows Credential Manager on Windows. Normal `agyc` requests probe that native session automatically and continue silently when it is already usable. On a first use on a new device/user profile, the wrapper starts the official Antigravity binary with no arguments inside a hidden pseudo-terminal rooted in an empty OS-temporary directory. The official client itself opens its Antigravity browser sign-in flow and writes its native secure-keyring session; all provider terminal rendering remains captured and invisible. As soon as the official session becomes usable, the hidden bootstrap process is stopped and `agyc` performs one headless verification request before continuing the original request. There is no Gemini CLI/Code Assist OAuth fallback, no `oauth_creds.json`, and no credential-migration step.
 
 Antigravity **IDE** is not required. The official Antigravity **CLI backend** is the supported Google subscription transport and is intentionally hidden behind this package's CMD-style interface.
+
+### Agentic task execution
+
+`agyc` is designed to run multi-step coding tasks rather than behave like a single request/response chat. Broad tasks can begin with a compact project overview, then inspect targeted files, edit multiple paths, run commands, react to failed checks, revise the implementation, and validate again before returning the final response. Direct API mode allows up to 60 model/tool iterations per instruction, retries transient model-service failures automatically, preserves useful head/tail evidence while bounding large tool/file results, requires a successful post-edit verification pass, and detects repeated identical tool loops so the model is told to change strategy instead of wasting its entire step budget. Google subscription mode delegates the coding loop to the official Antigravity agent with equivalent instructions to continue through inspection, implementation, debugging, and validation rather than stopping at the first failure.
+
+The execution remains transactional while doing this: all autonomous file changes and project commands operate on the disposable staging copy, and only the successful completed result is applied back to the real project.
 
 Use the Google account associated with the subscription you want Antigravity to use. A brand-new device may still require you to approve Google's browser sign-in once because the provider's secure session is device-local; that is identity consent, not CLI setup. Afterward, normal restarts and projects reuse the session automatically. `agyc login` remains available only as an explicit verification/renewal command. The wrapper never falls back to Gemini CLI or Code Assist authentication.
 
@@ -701,6 +707,7 @@ Short forms:
 | `GEMINI_BASE_URL` | Base URL for direct API-key mode. |
 | `GOOGLE_CLOUD_PROJECT` | Optional/required for some organization or Workspace Google-account environments. |
 | `ANTIGRAVITY_CLI_BINARY` | Optional absolute path override for the official Google Antigravity CLI backend. |
+| `AGYC_SKIP_PROVIDER_INSTALL` | Optional opt-out (`1`, `true`, `yes`, `on`) for npm-time provider preinstall; Google mode will still bootstrap on first use. |
 
 ## Typical workflows
 
@@ -845,6 +852,7 @@ src/history.js          external project-scoped conversation persistence
 src/settings.js         external persistent user preferences
 src/init.js             explicit optional project-instructions initializer
 scripts/setup-path.js    one-time Windows npm PATH bootstrap
+scripts/postinstall.js   npm-time official backend pre-provisioning
 test/                   automated tests
 AGENTS.md                implementation invariants for future changes
 ```
@@ -884,7 +892,7 @@ or switch back to Google mode:
 agyc --auth google
 ```
 
-Google mode does not require a separate login command. Your first normal request automatically installs/repairs the official Antigravity backend if necessary and opens the official browser sign-in only when the native secure session is missing. Once approved on that device, later requests and restarts reuse the secure session silently. The wrapper does not create or read Gemini CLI `oauth_creds.json` credentials.
+Google mode does not require a separate Antigravity install or login command. npm installation pre-provisions the official backend; your first normal request automatically repairs/retries that backend if necessary and opens the official browser sign-in only when the native secure session is missing. Once approved on that device, later requests and restarts reuse the secure session silently. The wrapper does not create or read Gemini CLI `oauth_creds.json` credentials.
 
 ### Google browser sign-in appears on a new device
 

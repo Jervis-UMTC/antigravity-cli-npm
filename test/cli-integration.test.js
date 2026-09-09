@@ -134,9 +134,21 @@ test('one-shot editing works in a folder with no Git repository', async () => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-nogit-cli-'));
   const stateRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-nogit-state-'));
   await fs.writeFile(path.join(workspace, 'app.txt'), 'before\n', 'utf8');
-  const fake = await startFakeGemini((index) => index === 0
-    ? writeFileCall('app.txt', 'after\n')
-    : modelText('updated'));
+  const fake = await startFakeGemini((index) => {
+    if (index === 0) return writeFileCall('app.txt', 'after\n');
+    if (index === 1) return modelText('updated');
+    if (index === 2) {
+      return {
+        body: {
+          candidates: [{ content: { role: 'model', parts: [{ functionCall: {
+            name: 'read_file',
+            args: { path: 'app.txt' }
+          } }] } }]
+        }
+      };
+    }
+    return modelText('updated');
+  });
 
   try {
     await assert.rejects(() => fs.stat(path.join(workspace, '.git')), /ENOENT/);
@@ -148,7 +160,7 @@ test('one-shot editing works in a folder with no Git repository', async () => {
     await assert.rejects(() => fs.stat(path.join(workspace, '.git')), /ENOENT/);
     await assert.rejects(() => fs.stat(path.join(workspace, '.gemini')), /ENOENT/);
     await assert.rejects(() => fs.stat(path.join(workspace, '.antigravity-cli')), /ENOENT/);
-    assert.equal(fake.requests.length, 2);
+    assert.equal(fake.requests.length, 4);
 
     const historyFiles = await fs.readdir(path.join(stateRoot, 'history'));
     assert.equal(historyFiles.length, 1);

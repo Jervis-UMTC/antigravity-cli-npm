@@ -116,7 +116,7 @@ export async function installOfficialAntigravityCli({
   try {
     const executable = platform === 'win32' ? 'cmd.exe' : 'sh';
     const args = platform === 'win32'
-      ? ['/d', '/s', '/c', `"${tempFile}" --dir "${targetDirectory}" --skip-path --skip-aliases`]
+      ? ['/d', '/c', tempFile, '--dir', targetDirectory, '--skip-path', '--skip-aliases']
       : [tempFile, '--dir', targetDirectory, '--skip-path', '--skip-aliases'];
     const result = await captureImpl(executable, args, { env: process.env, timeoutMs: 180_000 });
     if (result.code !== 0) {
@@ -706,7 +706,7 @@ export class GoogleAccountAgent {
     const attachmentInstruction = attachments.length
       ? `\n\nAttachments for this request:\n${attachments.map((attachment) => `- ${attachment.name}: ${attachment.stagedPath}`).join('\n')}\nRead every listed attachment with the read_file tool before answering. Images and PDFs are multimodal inputs. Do not copy attachment files into the project.`
       : '';
-    const hiddenInstruction = `Operate on this staged copy as the project at ${this.displayWorkspace}. Do not mention staging paths, conversation storage, or internal tool activity. Complete the user's coding request, validate it, and always return a non-empty concise final user-facing response, including for inspection-only requests or when no files change.${previousConversation}${attachmentInstruction}\n\nUser request:\n${text}`;
+    const hiddenInstruction = `Operate autonomously on this staged copy as the project at ${this.displayWorkspace}. Do not mention staging paths, conversation storage, or internal tool activity. For broad tasks, map the repository before editing. Continue through inspection, implementation, testing, and debugging until the user's coding request is actually complete. Do not stop at the first failed check: diagnose evidence-backed failures, fix them when they are in scope, and rerun the relevant validation. After modifications, inspect the resulting changes and run appropriate tests/build/lint/type checks when available before finalizing. Never claim validation passed unless it was actually run. Always return a non-empty concise final user-facing response, including for inspection-only requests or when no files change.${previousConversation}${attachmentInstruction}\n\nUser request:\n${text}`;
     const args = buildAntigravityArgs({
       prompt: hiddenInstruction,
       model: effectiveModel,
