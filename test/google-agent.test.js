@@ -554,6 +554,9 @@ test('GoogleAccountAgent executes through official Antigravity headless mode and
   assert.deepEqual(calls[0].args.slice(calls[0].args.indexOf('--effort'), calls[0].args.indexOf('--effort') + 2), ['--effort', 'high']);
   assert.ok(calls[0].args.includes('--dangerously-skip-permissions'));
   const firstPrompt = calls[0].args[calls[0].args.indexOf('-p') + 1];
+  assert.match(firstPrompt, /Never use emojis/);
+  assert.match(firstPrompt, /final section titled "Summary"/);
+  assert.match(firstPrompt, /Summary section must be the last section/);
   assert.match(firstPrompt, /Operate autonomously/);
   assert.match(firstPrompt, /Do not stop at the first failed check/);
   assert.match(firstPrompt, /run appropriate tests\/build\/lint\/type checks/);
@@ -594,7 +597,10 @@ test('GoogleAccountAgent recovers an empty successful provider response and retu
     calls[1].slice(calls[1].indexOf('--conversation'), calls[1].indexOf('--conversation') + 2),
     ['--conversation', 'conversation-empty']
   );
-  assert.match(calls[1][calls[1].indexOf('-p') + 1], /non-empty final user-facing response/);
+  const recoveryPrompt = calls[1][calls[1].indexOf('-p') + 1];
+  assert.match(recoveryPrompt, /non-empty final user-facing response/);
+  assert.match(recoveryPrompt, /Do not use emojis/);
+  assert.match(recoveryPrompt, /Summary/);
 });
 
 test('GoogleAccountAgent rejects a truly empty response instead of printing a placeholder', async () => {

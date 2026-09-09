@@ -43,12 +43,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Jervis-UMTC/antigravity-cli-npm.git"
+    "url": "git+https://github.com/Jervis-UMTC/agyc.git"
   },
   "bugs": {
-    "url": "https://github.com/Jervis-UMTC/antigravity-cli-npm/issues"
+    "url": "https://github.com/Jervis-UMTC/agyc/issues"
   },
-  "homepage": "https://github.com/Jervis-UMTC/antigravity-cli-npm#readme",
+  "homepage": "https://github.com/Jervis-UMTC/agyc#readme",
   "publishConfig": {
     "access": "public"
   }

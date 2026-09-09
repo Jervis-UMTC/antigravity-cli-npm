@@ -14,9 +14,9 @@ test('release metadata is explicit and production files include hardening module
   assert.equal(pkg.version, '0.1.0');
   assert.equal(pkg.license, 'MIT');
   assert.equal(pkg.publishConfig.access, 'public');
-  assert.equal(pkg.repository.url, 'git+https://github.com/Jervis-UMTC/antigravity-cli-npm.git');
-  assert.equal(pkg.bugs.url, 'https://github.com/Jervis-UMTC/antigravity-cli-npm/issues');
-  assert.equal(pkg.homepage, 'https://github.com/Jervis-UMTC/antigravity-cli-npm#readme');
+  assert.equal(pkg.repository.url, 'git+https://github.com/Jervis-UMTC/agyc.git');
+  assert.equal(pkg.bugs.url, 'https://github.com/Jervis-UMTC/agyc/issues');
+  assert.equal(pkg.homepage, 'https://github.com/Jervis-UMTC/agyc#readme');
   assert.match(pkg.scripts['release:check'], /npm publish --dry-run --ignore-scripts --json/);
   assert.equal(pkg.scripts.postinstall, 'node scripts/postinstall.js');
   assert.equal(pkg.bin.agyc, 'bin/agy.js');

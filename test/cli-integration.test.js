@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { createGoogleAuthBootstrap } from '../src/cli.js';
+import { createGoogleAuthBootstrap, promptLabel } from '../src/cli.js';
 import { createStagingWorkspace } from '../src/staging.js';
 import { createTaskStore } from '../src/task-state.js';
 
@@ -122,6 +122,10 @@ function writeFileCall(file, content) {
   };
 }
 
+test('interactive prompt uses a minimal agyc shell indicator', () => {
+  assert.equal(promptLabel('C:\\projects\\my-app'), 'agyc C:\\projects\\my-app> ');
+});
+
 test('normal Google use bootstraps authentication once without a separate login command', async () => {
   const options = { auth: 'google' };
   const notices = [];
@@ -147,6 +151,26 @@ test('normal Google use bootstraps authentication once without a separate login 
   options.auth = 'google';
   assert.equal(await bootstrap.ensure(), true);
   assert.equal(loginCalls, 2);
+});
+
+test('message shorthand sends one-shot text and capital M selects a model', async () => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-message-cli-'));
+  const stateRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-message-state-'));
+  const fake = await startFakeGemini((_index, body, request) => {
+    assert.match(request.url, /models\/gemini-3\.8-flash:generateContent/);
+    assert.match(JSON.stringify(body.contents), /hello from message flag/);
+    return modelText('message received');
+  });
+
+  try {
+    const result = await runCli(workspace, stateRoot, fake.baseUrl, ['-M', 'gemini-3.8-flash', '-m', 'hello from message flag']);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout.trim(), 'message received');
+  } finally {
+    await fake.close();
+    await fs.rm(workspace, { recursive: true, force: true });
+    await fs.rm(stateRoot, { recursive: true, force: true });
+  }
 });
 
 test('one-shot editing works in a folder with no Git repository', async () => {
@@ -269,6 +293,35 @@ test('persisted conversation is restored on the next CLI launch', async () => {
     }
   } finally {
     try { await first.close(); } catch {}
+    await fs.rm(workspace, { recursive: true, force: true });
+    await fs.rm(stateRoot, { recursive: true, force: true });
+  }
+});
+
+test('turbo flag allows one-shot command execution without an approval prompt', async () => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-turbo-cli-'));
+  const stateRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-turbo-state-'));
+  const fake = await startFakeGemini((index) => {
+    if (index === 0) {
+      return {
+        body: {
+          candidates: [{ content: { role: 'model', parts: [{ functionCall: {
+            name: 'run_command',
+            args: { command: 'node -e "require(\'fs\').writeFileSync(\'turbo.txt\',\'enabled\')"' }
+          } }] } }]
+        }
+      };
+    }
+    return modelText('turbo complete');
+  });
+
+  try {
+    const result = await runCli(workspace, stateRoot, fake.baseUrl, ['--turbo', '-p', 'run the trusted command']);
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout.trim(), 'turbo complete');
+    assert.equal(await fs.readFile(path.join(workspace, 'turbo.txt'), 'utf8'), 'enabled');
+  } finally {
+    await fake.close();
     await fs.rm(workspace, { recursive: true, force: true });
     await fs.rm(stateRoot, { recursive: true, force: true });
   }

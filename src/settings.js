@@ -18,10 +18,12 @@ function normalizeSettings(value) {
   const reasoning = String(input.reasoning || '').trim().toLowerCase();
   const auth = String(input.auth || '').trim().toLowerCase();
   const approval = String(input.approval || '').trim().toLowerCase();
+  const turbo = typeof input.turbo === 'boolean' ? input.turbo : null;
   if (model) result.model = model;
   if (VALID_REASONING.has(reasoning)) result.reasoning = reasoning;
   if (VALID_AUTH.has(auth)) result.auth = auth;
   if (VALID_APPROVAL.has(approval)) result.approval = approval;
+  if (turbo !== null) result.turbo = turbo;
   return result;
 }
 
@@ -78,9 +80,11 @@ export function mergeRuntimePreferences(parsed, stored = {}, env = process.env) 
   const envModel = String(env.ANTIGRAVITY_MODEL || '').trim();
   const envReasoning = String(env.ANTIGRAVITY_REASONING || '').trim();
 
-  options.auth = options.auth || envAuth || stored.auth || 'auto';
-  options.model = options.model || envModel || stored.model || null;
+  options.auth = options.auth || envAuth || stored.auth || 'google';
+  options.model = options.model || envModel || stored.model || 'gemini-3.8-flash';
   options.reasoning = options.reasoning || envReasoning || stored.reasoning || 'auto';
-  if (options.yes === null || options.yes === undefined) options.yes = stored.approval === 'yes';
+  if (options.turbo === null || options.turbo === undefined) options.turbo = stored.turbo !== false;
+  if (options.yes === null || options.yes === undefined) options.yes = options.turbo || stored.approval === 'yes';
+  if (options.turbo) options.yes = true;
   return options;
 }

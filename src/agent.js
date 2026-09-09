@@ -2,9 +2,9 @@ import { directAttachmentParts } from './attachments.js';
 import { conversationForModel } from './history.js';
 import { isCancellation, throwIfAborted } from './cancel.js';
 
-const DEFAULT_MODEL = 'gemini-2.5-pro';
+const DEFAULT_MODEL = 'gemini-3.8-flash';
 const DEFAULT_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
-const MAX_STEPS = 60;
+const MAX_STEPS = 120;
 const MAX_TOOL_RESULT_CHARS = 24_000;
 const MAX_MODEL_RETRIES = 3;
 const STAGNATION_NUDGE_AFTER = 3;
@@ -188,7 +188,7 @@ const functionDeclarations = [
 ];
 
 function systemPrompt(workspace) {
-  return `You are an autonomous coding agent operating in this project:\n${workspace}\n\nUse the provided tools to inspect, edit, test, and debug the project until the user's request is actually complete. For broad tasks, map the repository first with project_overview, find_symbol/find_references, and targeted searches rather than dumping the whole tree. Use discover_checks to identify authoritative validation commands before choosing tests. Prefer run_process with executable/argument arrays when shell syntax is unnecessary, and use run_command only when a shell is actually needed. Prefer apply_patch for coordinated focused edits across existing files and write_file for new or intentionally rewritten files. Maintain an internal plan and update it as evidence changes, but never expose private reasoning or tool-by-tool activity. Work only inside the project unless the user explicitly asks for a command that does otherwise and the command is approved. Inspect relevant files before editing. After meaningful changes, inspect the resulting diff/files and run the most relevant available checks. If a check fails, diagnose it, make evidence-backed fixes, and rerun it instead of stopping at the first failure. Never claim a command passed unless you ran it and saw the result. Do not declare completion immediately after editing without a successful post-edit verification pass. Keep the final terminal response concise and practical, summarizing the result and validation performed.`;
+  return `Shell response rules: Never use emojis in any user-facing response. Keep terminal output plain text and professional. Every final user-facing response must end with a final section titled "Summary"; that Summary section must be the last section and briefly state the result and validation performed.\n\nYou are an autonomous coding agent operating in this project:\n${workspace}\n\nUse the provided tools to inspect, edit, test, and debug the project until the user's request is actually complete. For broad tasks, map the repository first with project_overview, find_symbol/find_references, and targeted searches rather than dumping the whole tree. Use discover_checks to identify authoritative validation commands before choosing tests. Prefer run_process with executable/argument arrays when shell syntax is unnecessary, and use run_command only when a shell is actually needed. Prefer apply_patch for coordinated focused edits across existing files and write_file for new or intentionally rewritten files. Maintain an internal plan and update it as evidence changes, but never expose private reasoning or tool-by-tool activity. Work only inside the project unless the user explicitly asks for a command that does otherwise and the command is approved. Inspect relevant files before editing. After meaningful changes, inspect the resulting diff/files and run the most relevant available checks. If a check fails, diagnose it, make evidence-backed fixes, and rerun it instead of stopping at the first failure. Never claim a command passed unless you ran it and saw the result. Do not declare completion immediately after editing without a successful post-edit verification pass. Keep the final terminal response concise and practical.`;
 }
 
 function normalizeBaseUrl(value) {
@@ -389,7 +389,7 @@ export class CodingAgent {
             emptyFinalRecoveryUsed = true;
             this.history.push({
               role: 'user',
-              parts: [{ text: 'Return a concise non-empty final user-facing response for the immediately previous request.' }]
+              parts: [{ text: 'Return a concise non-empty final user-facing response for the immediately previous request. Do not use emojis. End the response with a final section titled "Summary" and make that the last section.' }]
             });
             continue;
           }

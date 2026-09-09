@@ -1,16 +1,108 @@
-# Antigravity CLI for npm
+# agyc
 
-A coding agent that looks and behaves like a normal command prompt.
+A coding agent that looks and behaves like a normal command prompt. The public command and repository name are `agyc`.
 
 `agyc` intentionally has no AI-style terminal interface: no startup banner, cards, panels, animated spinner, tool-call stream, model badge, reasoning display, assistant label, or live edit animation. Normal interactive startup is simply:
 
 ```text
-C:\projects\my-app>
+agyc C:\projects\my-app>
 ```
 
 The agent works behind that prompt. It performs project edits in a private OS-temporary copy and publishes the completed file state only after the instruction succeeds.
 
 > This repository is an npm implementation. It is not the proprietary Google Antigravity CLI binary.
+
+## Quick tutorial: Google account, message, and attachment
+
+The default path uses your Google/Gemini subscription account. You do not need a Gemini API key.
+
+### 1. Install the CLI
+
+From this repository while testing locally:
+
+```cmd
+npm install
+npm link
+```
+
+After the package is published, the normal global install is:
+
+```cmd
+npm install -g antigravity-cli-npm
+```
+
+The public command and repository name are `agyc`. Do not use `agy`.
+
+### 2. Open the project and start `agyc`
+
+```cmd
+cd C:\projects\my-app
+agyc
+```
+
+A fresh profile defaults to:
+
+```text
+model=gemini-3.8-flash
+auth=google
+turbo=on
+approval=yes
+```
+
+Fresh installs already use Google auth. If this machine has settings saved by an older build, force and persist the subscription path once:
+
+```text
+agyc C:\projects\my-app> auth google
+```
+
+On a new machine, the first real request may open Google's browser sign-in. Sign in with the Google account that owns your subscription, finish the browser flow, and return to the terminal. Later launches reuse that account session.
+
+You can verify the connection at any time:
+
+```text
+agyc C:\projects\my-app> status
+```
+
+### 3. Send a message
+
+In interactive mode, type the instruction directly at the project prompt:
+
+```text
+agyc C:\projects\my-app> inspect this project, explain the important parts, and run the relevant checks
+```
+
+For one message without entering interactive mode:
+
+```cmd
+agyc -m "inspect this project and summarize it"
+```
+
+`-p` / `--print` is an equivalent one-shot form. `-M` / `--model` selects a model.
+
+### 4. Attach a file, image, or document
+
+Interactive example:
+
+```text
+agyc C:\projects\my-app> attach C:\docs\requirements.pdf
+agyc C:\projects\my-app> implement the requirements in the attached document and run the tests
+```
+
+Images, PDFs, DOCX, XLSX, PPTX, and ordinary text/code files are supported. The attachment applies to the next request.
+
+One-shot attachment example:
+
+```cmd
+agyc --attach "C:\docs\requirements.pdf" -m "implement this specification and validate the result"
+```
+
+Use multiple `--attach` flags when needed.
+
+### 5. Cancel the current request
+
+Press Ctrl+C while the agent is working. It cancels the whole current request, including the active provider call and child command, discards unpublished staged changes, does not save the canceled turn to conversation history, and returns to the interactive prompt. Earlier conversation history remains available.
+
+Normal agent responses stay shell-friendly: no emojis are requested, and every completed response is instructed to finish with a final `Summary` section.
 
 ## Key behavior
 
@@ -30,11 +122,10 @@ The agent works behind that prompt. It performs project edits in a private OS-te
 
 - Node.js 20 or newer.
 - npm.
-- One authentication method:
-  - a Google/Gemini subscription account through Google's official Antigravity CLI backend, or
-  - a Gemini API key in `GEMINI_API_KEY`.
+- A Google/Gemini subscription account through Google's official Antigravity CLI backend for the default setup.
+- Direct Gemini API-key mode remains available only when you explicitly select it.
 
-For Google subscription mode, `agyc` uses the official Antigravity CLI only as a hidden headless backend. A normal npm install pre-provisions that backend into a private per-user data location, even when the machine has no Antigravity installation. The provider binary is never added to PATH and never claims this package's `agyc` command. If pre-provisioning was temporarily offline, the first Google request retries the same bootstrap automatically.
+Fresh installs default to **Google subscription auth + turbo mode + no command approval prompts**. `agyc` uses the official Antigravity CLI only as a hidden headless backend. A normal npm install pre-provisions that backend into a private per-user data location, even when the machine has no Antigravity installation. The provider binary is never added to PATH and never claims this package's `agyc` command. If pre-provisioning was temporarily offline, the first Google request retries the same bootstrap automatically.
 
 ## Start here: first use in 5 minutes
 
@@ -117,15 +208,17 @@ On Windows, a first global install may require one new terminal before `agyc` is
 
 > Use **`agyc`**, not `agy`. This package deliberately does not export `agy` or `antigravity`, because Google's official Antigravity backend or another product may already own those names.
 
-### 3. Choose authentication
+### 3. Google subscription authentication is already the default
 
-For most users with a Google/Gemini subscription, use Google mode. You do **not** need to install Antigravity separately and you do **not** need to run `agyc login` first.
+For your Google/Gemini Pro subscription, do **not** set an API key and do **not** need to install Antigravity separately or run `agyc login` first. Just start:
 
 ```cmd
-agyc --auth google
+agyc
 ```
 
-Then enter a normal request. On a new device, the first request may open Google's official browser sign-in once. Complete the browser consent and return to the terminal; the original request continues automatically. Later sessions reuse the provider's secure account session.
+A fresh profile starts with `model=gemini-3.8-flash`, `auth=google`, `turbo=on`, and `approval=yes`. On a new device, the first real request may open Google's official browser sign-in once. Sign in with the Google account that owns your Gemini/Google AI Pro subscription, complete browser consent, and return to the terminal; the original request continues automatically. Later sessions reuse the provider's secure account session.
+
+To verify the defaults after login, run `status`. Gemini 3.8 Flash is the default. Use `model pro` only when you intentionally want the Pro alias; `reasoning high` is optional when you want the stronger reasoning setting.
 
 If you want to explicitly verify or renew the Google session:
 
@@ -170,7 +263,7 @@ agyc
 You should see only the normal current-directory prompt:
 
 ```text
-C:\projects\my-app>
+agyc C:\projects\my-app>
 ```
 
 Do not start `agyc` from the `antigravity-cli-npm` source repository unless that is the project you actually want the agent to modify.
@@ -180,10 +273,10 @@ Do not start `agyc` from the `antigravity-cli-npm` source repository unless that
 Examples:
 
 ```text
-C:\projects\my-app> check this project and explain the important parts
-C:\projects\my-app> find the cause of the failing tests and fix it
-C:\projects\my-app> add validation to the signup endpoint and run the relevant tests
-C:\projects\my-app> refactor this module without changing public behavior
+agyc C:\projects\my-app> check this project and explain the important parts
+agyc C:\projects\my-app> find the cause of the failing tests and fix it
+agyc C:\projects\my-app> add validation to the signup endpoint and run the relevant tests
+agyc C:\projects\my-app> refactor this module without changing public behavior
 ```
 
 For a request that takes more than a moment, you may briefly see one plain line such as `Preparing...`, `Inspecting...`, `Working...`, `Checking...`, or `Applying changes...`. It is erased before the final response.
@@ -193,8 +286,8 @@ For a request that takes more than a moment, you may briefly see one plain line 
 Inside `agyc`:
 
 ```text
-C:\projects\my-app> status
-C:\projects\my-app> doctor
+agyc C:\projects\my-app> status
+agyc C:\projects\my-app> doctor
 ```
 
 `status` shows the selected model/auth/approval state and whether the backend/account are ready. `doctor` checks Node/npm, command resolution, state-directory access, provider/account health, provider provenance, and basic network reachability.
@@ -210,6 +303,8 @@ model pro               Select/persist the pro alias
 reasoning high          Request stronger reasoning
 approval ask            Ask before direct API shell commands
 approval yes            Allow autonomous command execution
+turbo on                Persist trusted autonomous execution without repeated prompts
+turbo off               Disable turbo mode
 attach <path>           Attach a screenshot/document to the next request
 history                  Show project conversation history
 clear                    Clear project conversation state
@@ -224,17 +319,21 @@ exit                     Exit
 
 ### 8. One-shot mode
 
-Run one instruction and exit:
+Run one text message/instruction and exit:
 
 ```cmd
-agyc -p "check this project and summarize it"
+agyc -m "check this project and summarize it"
 ```
+
+`-p` / `--print` remains an equivalent one-shot form for compatibility.
 
 Run autonomously in a project you trust:
 
 ```cmd
-agyc --yes -p "fix the failing tests and run the relevant validation"
+agyc --turbo -p "fix the failing tests and run the relevant validation"
 ```
+
+Inside interactive mode, `turbo on` persists the same trusted no-prompt execution preference for later launches. `approval ask` disables turbo again.
 
 ### 9. Packaged-tarball test before npm publication
 
@@ -279,7 +378,7 @@ Antigravity **IDE** is not required. The official Antigravity **CLI backend** is
 
 ### Agentic task execution
 
-`agyc` is designed to run multi-step coding tasks rather than behave like a single request/response chat. Broad tasks can begin with a compact project overview, discover likely project validation commands, navigate symbol definitions/references, apply focused multi-file patches, run native executables with structured argv when a shell is unnecessary, react to failed checks, revise the implementation, and validate again before returning the final response. Direct API mode allows up to 60 model/tool iterations per instruction, retries transient model-service failures automatically, preserves useful head/tail evidence while bounding large tool/file results, requires a successful post-edit verification pass, and detects repeated identical tool loops so the model is told to change strategy instead of wasting its entire step budget. Google subscription mode delegates the coding loop to the official Antigravity agent with equivalent instructions to continue through inspection, implementation, debugging, and validation rather than stopping at the first failure.
+`agyc` is designed to run multi-step coding tasks rather than behave like a single request/response chat. Broad tasks can begin with a compact project overview, discover likely project validation commands, navigate symbol definitions/references, apply focused multi-file patches, run native executables with structured argv when a shell is unnecessary, react to failed checks, revise the implementation, and validate again before returning the final response. Direct API mode allows up to 120 model/tool iterations per instruction, retries transient model-service failures automatically, preserves useful head/tail evidence while bounding large tool/file results, requires a successful post-edit verification pass, and detects repeated identical tool loops so the model is told to change strategy instead of wasting its entire step budget. Google subscription mode delegates the coding loop to the official Antigravity agent with equivalent instructions to continue through inspection, implementation, debugging, and validation rather than stopping at the first failure.
 
 The execution remains transactional while doing this: all autonomous file changes and project commands operate on the disposable staging copy, and only the successful completed result is applied back to the real project.
 
@@ -333,7 +432,7 @@ agyc --auth google
 agyc --auth api-key
 ```
 
-Environment default:
+Fresh-profile default is already `google`. `ANTIGRAVITY_AUTH` is only needed when you intentionally want to override it:
 
 ```cmd
 set ANTIGRAVITY_AUTH=google
@@ -351,31 +450,33 @@ agyc
 Then type normal instructions:
 
 ```text
-C:\projects\my-app> find the cause of the failing tests and fix it
+agyc C:\projects\my-app> find the cause of the failing tests and fix it
 
 Fixed the validation bug and the affected tests now pass.
 
-C:\projects\my-app> add input validation to the signup endpoint
+agyc C:\projects\my-app> add input validation to the signup endpoint
 
 Added signup validation and updated the endpoint tests.
 
-C:\projects\my-app>
+agyc C:\projects\my-app>
 ```
 
-There is no visible tool stream while the task is running. For requests that take more than a moment, `agyc` uses one transient plain-text line with simple phases such as `Preparing... 1s`, `Inspecting... 4s`, `Working... 12s`, `Checking... 18s`, and `Applying changes... 21s`. It is not a spinner or progress UI: there are no colors, panels, tool names, model names, reasoning labels, or animations. The line pauses during permission prompts and is erased before the final response or error appears. Pressing Ctrl+C during active work cancels the request, discards/rolls back staged publication, and returns `Canceled.` without publishing a partial project state.
+There is no visible tool stream while the task is running. For requests that take more than a moment, `agyc` uses one transient plain-text line with simple phases such as `Preparing... 1s`, `Inspecting... 4s`, `Working... 12s`, `Checking... 18s`, and `Applying changes... 21s`. It is not a spinner or progress UI: there are no colors, panels, tool names, model names, reasoning labels, or animations. The line pauses during permission prompts and is erased before the final response or error appears. Pressing Ctrl+C during active work cancels the whole current agent request—not only a child command—including the provider call and any active command. The canceled turn is not appended to conversation history, staged work is discarded/rolled back, and the interactive shell returns `Canceled.` while keeping earlier conversation turns available.
 
 ## One-shot usage
 
-Run one instruction and exit:
+Run one text message/instruction and exit:
 
 ```cmd
-agyc -p "find the bug and fix it"
+agyc -m "find the bug and fix it"
 ```
+
+`-p` / `--print` remains an equivalent one-shot form for compatibility.
 
 With options:
 
 ```cmd
-agyc --model pro --reasoning high --yes -p "implement the feature and run the tests"
+agyc --model pro --reasoning high -p "implement the feature and run the tests"
 ```
 
 The same hidden transaction is used in one-shot mode.
@@ -387,14 +488,14 @@ All interactive controls are ordinary text commands at the same project prompt.
 ### Help
 
 ```text
-C:\project> help
+agyc C:\project> help
 ```
 
 ### Status
 
 ```text
-C:\project> status
-model=auto reasoning=auto auth=google approval=ask backend=ready account=connected attachments=0 history=0
+agyc C:\project> status
+model=gemini-3.8-flash reasoning=auto auth=google approval=yes turbo=on backend=ready account=connected attachments=0 history=0
 ```
 
 `status` is deliberately terse. It is not shown automatically. In Google mode it performs hidden provider health/account probes; in API-key mode it reports whether the key is configured. It also reports `task=pending` when an abnormal prior termination left resumable staged work.
@@ -402,12 +503,12 @@ model=auto reasoning=auto auth=google approval=ask backend=ready account=connect
 ### Doctor, provider, and interrupted tasks
 
 ```text
-C:\project> doctor
-C:\project> provider
-C:\project> provider update
-C:\project> task
-C:\project> task clear
-C:\project> resume
+agyc C:\project> doctor
+agyc C:\project> provider
+agyc C:\project> provider update
+agyc C:\project> task
+agyc C:\project> task clear
+agyc C:\project> resume
 ```
 
 `doctor` prints plain `name=ok|warn|fail` health lines for the wrapper version, Node/npm, workspace/state writability, command resolution, Google backend/account state, provider provenance, and basic network reachability. `provider` reports the private backend status; `provider update` reinstalls a managed backend from the official installer with post-install validation and rollback. `task` reports whether a crash checkpoint exists, `resume` continues it only if the real-project baseline is still unchanged, and `task clear` deliberately deletes both the checkpoint and its temporary staged copy.
@@ -415,20 +516,20 @@ C:\project> resume
 ### Current directory
 
 ```text
-C:\project> cwd
+agyc C:\project> cwd
 C:\project
 ```
 
 ### Clear terminal
 
 ```text
-C:\project> cls
+agyc C:\project> cls
 ```
 
 ### Exit
 
 ```text
-C:\project> exit
+agyc C:\project> exit
 ```
 
 `quit` is accepted as an exit alias.
@@ -438,14 +539,14 @@ C:\project> exit
 Show the current model:
 
 ```text
-C:\project> model
+agyc C:\project> model
 auto
 ```
 
 Discover available choices:
 
 ```text
-C:\project> model list
+agyc C:\project> model list
 auto
 pro
 flash
@@ -460,14 +561,14 @@ If official subscription discovery is unavailable, `agyc` falls back to Google's
 Change the model silently:
 
 ```text
-C:\project> model pro
-C:\project>
+agyc C:\project> model pro
+agyc C:\project>
 ```
 
 Concrete provider model names may also be supplied:
 
 ```text
-C:\project> model gemini-3.1-pro-preview
+agyc C:\project> model gemini-3.1-pro-preview
 ```
 
 Process option:
@@ -489,14 +590,14 @@ Reasoning controls affect provider thinking configuration without exposing model
 Show the current setting:
 
 ```text
-C:\project> reasoning
+agyc C:\project> reasoning
 auto
 ```
 
 Choices:
 
 ```text
-C:\project> reasoning list
+agyc C:\project> reasoning list
 auto
 low
 high
@@ -505,8 +606,8 @@ high
 Set it:
 
 ```text
-C:\project> reasoning high
-C:\project>
+agyc C:\project> reasoning high
+agyc C:\project>
 ```
 
 Interactive changes to `model`, `reasoning`, `auth`, and `approval` are persisted globally under the external state root and reused in later `agyc` processes. Command-line flags and environment variables can still override those saved defaults for a specific launch.
@@ -531,33 +632,53 @@ Environment default:
 set ANTIGRAVITY_REASONING=high
 ```
 
-## Command approval
+## Turbo mode and command approval
 
-Show the current mode:
+Turbo mode and no-prompt autonomous command execution are enabled by default on a fresh profile:
 
 ```text
-C:\project> approval
+agyc C:\project> turbo on
+agyc C:\project>
+```
+
+Check or disable it with `turbo` / `turbo off`. Turning turbo off also restores `approval ask`. One-shot equivalent:
+
+```cmd
+agyc --turbo -p "finish the task, run the checks, and fix failures"
+```
+
+Turbo mode implies command approval `yes` for the launch. `--no-turbo` explicitly restores approval prompts for that launch even if turbo was previously persisted. Turbo does not remove the wrapper's transactional staging, conflict detection, cancellation rollback, or project-file path protections in direct API mode. The Google backend keeps using the existing trusted `yes` behavior, which removes its terminal sandbox while the wrapper still stages project publication.
+
+Show the current approval mode:
+
+```text
+agyc C:\project> approval
 ask
 ```
 
 Choices:
 
 ```text
-C:\project> approval list
+agyc C:\project> approval list
 ask
 yes
 ```
 
-Default:
+Fresh-profile default:
 
 ```text
-C:\project> approval ask
+agyc C:\project> approval
+yes
+agyc C:\project> turbo
+on
 ```
+
+Use `approval ask` or `turbo off` only when you intentionally want command prompts.
 
 Autonomous mode:
 
 ```text
-C:\project> approval yes
+agyc C:\project> approval yes
 ```
 
 or at startup:
@@ -575,10 +696,10 @@ In direct API-key mode, `ask` requires confirmation before shell commands. In Go
 Attachments are queued for the **next** ordinary instruction.
 
 ```text
-C:\project> attach screenshot.png
-C:\project> attach requirements.pdf
-C:\project> attach notes.md
-C:\project> implement the change described in these files
+agyc C:\project> attach screenshot.png
+agyc C:\project> attach requirements.pdf
+agyc C:\project> attach notes.md
+agyc C:\project> implement the change described in these files
 ```
 
 Successful `attach` commands produce no confirmation line.
@@ -586,7 +707,7 @@ Successful `attach` commands produce no confirmation line.
 Inspect pending attachments:
 
 ```text
-C:\project> attach
+agyc C:\project> attach
 C:\project\screenshot.png
 C:\project\requirements.pdf
 C:\project\notes.md
@@ -595,13 +716,13 @@ C:\project\notes.md
 `attach list` is equivalent:
 
 ```text
-C:\project> attach list
+agyc C:\project> attach list
 ```
 
 Clear the queue:
 
 ```text
-C:\project> attach clear
+agyc C:\project> attach clear
 ```
 
 After a successful user instruction, the queued attachments are consumed and the queue returns to empty.
@@ -642,7 +763,7 @@ agyc --attach "C:\docs\feature spec.pdf" -p "implement this"
 Interactive equivalent:
 
 ```text
-C:\project> attach "C:\docs\feature spec.pdf"
+agyc C:\project> attach "C:\docs\feature spec.pdf"
 ```
 
 ## Conversation history
@@ -666,26 +787,26 @@ Each project is mapped to a stable hashed history filename.
 Show conversation history only when requested:
 
 ```text
-C:\project> history
+agyc C:\project> history
 ```
 
 Show the exact external history path:
 
 ```text
-C:\project> history path
+agyc C:\project> history path
 C:\Users\you\.antigravity-cli\history\<project-key>.json
 ```
 
 Clear it:
 
 ```text
-C:\project> history clear
+agyc C:\project> history clear
 ```
 
 The general `clear` command also clears persisted conversation history and pending attachments for the current project:
 
 ```text
-C:\project> clear
+agyc C:\project> clear
 ```
 
 History stores user messages, final replies, timestamps, and attachment metadata such as attachment names/paths. It does not store internal reasoning or the tool-by-tool execution stream.
@@ -820,9 +941,12 @@ agyc provider [status|update]
 agyc resume
 agyc task [clear]
 agyc init
+agyc -m <message>
 agyc -p <prompt>
 agyc --attach <path>
 agyc --yes
+agyc --turbo
+agyc --no-turbo
 agyc --auth auto|google|api-key
 agyc --model <name>
 agyc --reasoning auto|low|high
@@ -834,9 +958,10 @@ agyc --version
 Short forms:
 
 ```text
+-m  --message
 -p  --print
+-M  --model
 -y  --yes
--m  --model
 -h  --help
 -v  --version
 ```
@@ -863,21 +988,21 @@ Short forms:
 ### Fix a failing test
 
 ```text
-C:\project> fix the failing tests and run the relevant test suite
+agyc C:\project> fix the failing tests and run the relevant test suite
 ```
 
 ### Implement from a screenshot
 
 ```text
-C:\project> attach C:\designs\checkout.png
-C:\project> recreate this checkout behavior using the existing components
+agyc C:\project> attach C:\designs\checkout.png
+agyc C:\project> recreate this checkout behavior using the existing components
 ```
 
 ### Implement from a PDF specification
 
 ```text
-C:\project> attach C:\specs\api-requirements.pdf
-C:\project> implement the required endpoint changes and tests
+agyc C:\project> attach C:\specs\api-requirements.pdf
+agyc C:\project> implement the required endpoint changes and tests
 ```
 
 ### Continue work tomorrow
@@ -892,7 +1017,7 @@ The project-scoped external conversation history is loaded automatically.
 ### Start with a clean conversation
 
 ```text
-C:\project> clear
+agyc C:\project> clear
 ```
 
 ### Use stronger reasoning for one session
@@ -1132,19 +1257,19 @@ Inside `ANTIGRAVITY_HOME\history` if configured; otherwise below your home direc
 Use:
 
 ```text
-C:\project> history path
+agyc C:\project> history path
 ```
 
 ### How do I erase project conversation history?
 
 ```text
-C:\project> history clear
+agyc C:\project> history clear
 ```
 
 or:
 
 ```text
-C:\project> clear
+agyc C:\project> clear
 ```
 
 ## License

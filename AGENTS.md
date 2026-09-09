@@ -4,7 +4,7 @@ The normal CLI must look and behave like an ordinary command prompt, not an AI a
 
 - Do not add startup banners, logos, decorative headings, panels, cards, status bars, animated spinners, colors, assistant labels, tool-call labels, model badges, auth badges, reasoning indicators, or other product chrome.
 - A single transient plain-text activity line such as `Preparing... 1s`, `Inspecting... 4s`, `Working... 12s`, `Checking... 18s`, or `Applying changes...` is allowed while an ordinary request is running. It must remain visually plain, expose no model/tool/reasoning details, pause for permission prompts, and be erased before the final response or error is printed.
-- On normal interactive startup, print nothing before the current-directory prompt.
+- On normal interactive startup, print nothing before the plain `agyc <current-directory>> ` prompt.
 - All controls must be plain CMD-style commands at the same prompt. Do not introduce slash commands, menus, pickers, full-screen interfaces, or custom interactive widgets.
 - Model selection, reasoning effort, authentication, approvals, session clearing, status, login, explicit project initialization, and exit must remain available through terse text commands. Persistent user preferences must live outside projects under the external state root.
 - Keep internal reasoning, provider selection, model/tool plumbing, coding-agent orchestration, and intermediate tool output hidden from normal terminal output.
@@ -16,7 +16,7 @@ The normal CLI must look and behave like an ordinary command prompt, not an AI a
 - Print the final response only after the completed staged changes have been applied to the real project.
 - Show only user-requested output, final responses, genuine errors, and permission prompts that are necessary for safe execution.
 - Successful state changes such as clearing a session or changing a model/reasoning setting should stay quiet unless the user explicitly asks to inspect that state.
-- Preserve the shell-like prompt format, for example `C:\project> `, without additional branding around it.
+- Preserve the shell-like prompt format with only the minimal public-command indicator, for example `agyc C:\project> `. Do not add any other branding or chrome around it.
 - Google subscription execution must use Google's official Antigravity CLI in headless/JSON mode. A package-managed provider binary must be installed from Google's official installer into a private per-user data directory that is not a normal command directory, must use the provider installer's no-PATH/no-alias options, and must be invoked by absolute path so it never shadows this package's `agyc` command. Managed installs should retain external provenance/digest metadata, and explicit provider updates must health-check the replacement and roll back on failure; external `ANTIGRAVITY_CLI_BINARY` overrides must never be silently replaced.
 - The public short command for this npm package is `agyc`. Do not expose `agy`, because Google's provider and other products may already own that command. The official provider binary may still be named `agy` internally, but it must remain private and be invoked only by absolute path.
 - In Google headless mode, provider permission prompts cannot be surfaced reliably. Normal `approval ask` must therefore run provider tools with auto-permission inside the provider's terminal sandbox and the wrapper's disposable staging copy; explicit `approval yes` may remove the provider sandbox. Never let a permission denial silently become an empty successful CLI reply.

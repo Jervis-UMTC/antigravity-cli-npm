@@ -10,11 +10,11 @@ test('global preferences persist outside a project and survive reload', async ()
   const project = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-settings-project-'));
   try {
     const store = await createSettingsStore({ baseDir: root });
-    await store.update({ model: 'gemini-3.8-flash', reasoning: 'high', auth: 'google', approval: 'yes' });
+    await store.update({ model: 'gemini-3.8-flash', reasoning: 'high', auth: 'google', approval: 'yes', turbo: true });
     assert.equal(store.path, settingsPath({ baseDir: root }));
     assert.equal(path.resolve(store.path).startsWith(`${path.resolve(project)}${path.sep}`), false);
     assert.deepEqual(await store.load(), {
-      model: 'gemini-3.8-flash', reasoning: 'high', auth: 'google', approval: 'yes'
+      model: 'gemini-3.8-flash', reasoning: 'high', auth: 'google', approval: 'yes', turbo: true
     });
   } finally {
     await fs.rm(root, { recursive: true, force: true });
@@ -22,14 +22,19 @@ test('global preferences persist outside a project and survive reload', async ()
   }
 });
 
+test('fresh defaults use Google subscription auth with turbo and no approval prompts', () => {
+  const merged = mergeRuntimePreferences({ model: null, reasoning: null, auth: null, yes: null, turbo: null }, {}, {});
+  assert.deepEqual(merged, { model: 'gemini-3.8-flash', reasoning: 'auto', auth: 'google', yes: true, turbo: true });
+});
+
 test('CLI values override environment, environment overrides stored preferences', () => {
-  const stored = { model: 'stored-model', reasoning: 'low', auth: 'google', approval: 'yes' };
-  const merged = mergeRuntimePreferences({ model: null, reasoning: null, auth: null, yes: null }, stored, {
+  const stored = { model: 'stored-model', reasoning: 'low', auth: 'google', approval: 'yes', turbo: true };
+  const merged = mergeRuntimePreferences({ model: null, reasoning: null, auth: null, yes: null, turbo: null }, stored, {
     ANTIGRAVITY_MODEL: 'env-model', ANTIGRAVITY_REASONING: 'high', ANTIGRAVITY_AUTH: 'api-key'
   });
-  assert.deepEqual(merged, { model: 'env-model', reasoning: 'high', auth: 'api-key', yes: true });
-  const cli = mergeRuntimePreferences({ model: 'cli-model', reasoning: 'auto', auth: 'google', yes: false }, stored, {
+  assert.deepEqual(merged, { model: 'env-model', reasoning: 'high', auth: 'api-key', yes: true, turbo: true });
+  const cli = mergeRuntimePreferences({ model: 'cli-model', reasoning: 'auto', auth: 'google', yes: false, turbo: false }, stored, {
     ANTIGRAVITY_MODEL: 'env-model', ANTIGRAVITY_REASONING: 'high', ANTIGRAVITY_AUTH: 'api-key'
   });
-  assert.deepEqual(cli, { model: 'cli-model', reasoning: 'auto', auth: 'google', yes: false });
+  assert.deepEqual(cli, { model: 'cli-model', reasoning: 'auto', auth: 'google', yes: false, turbo: false });
 });

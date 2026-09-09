@@ -72,6 +72,7 @@ function parseArgs(argv) {
     print: null,
     attachments: [],
     yes: null,
+    turbo: null,
     auth: null,
     model: null,
     reasoning: null,
@@ -86,11 +87,13 @@ function parseArgs(argv) {
       result.command = arg;
       if (['provider', 'task'].includes(arg) && argv[i + 1] && !argv[i + 1].startsWith('-')) result.commandArg = argv[++i];
     }
-    else if (arg === '-p' || arg === '--print') result.print = argv[++i] ?? '';
+    else if (arg === '-p' || arg === '--print' || arg === '-m' || arg === '--message') result.print = argv[++i] ?? '';
     else if (arg === '--attach') result.attachments.push(argv[++i] ?? '');
     else if (arg === '-y' || arg === '--yes') result.yes = true;
+    else if (arg === '--turbo') result.turbo = true;
+    else if (arg === '--no-turbo') { result.turbo = false; result.yes = false; }
     else if (arg === '--auth') result.auth = argv[++i] || '';
-    else if (arg === '-m' || arg === '--model') result.model = argv[++i] || '';
+    else if (arg === '-M' || arg === '--model') result.model = argv[++i] || '';
     else if (arg === '--reasoning') result.reasoning = normalizeReasoning(argv[++i] || '');
     else if (arg === '--base-url') result.baseUrl = argv[++i] || result.baseUrl;
     else if (arg === '-h' || arg === '--help') result.help = true;
@@ -107,11 +110,11 @@ function parseArgs(argv) {
 }
 
 function helpText(version) {
-  return `agyc ${version}\n\nUsage:\n  agyc                            Start in the current directory\n  agyc doctor                     Check local installation/runtime health\n  agyc login                      Verify or renew Google sign-in\n  agyc provider [status|update]   Inspect or update the private Google backend\n  agyc resume                     Resume an interrupted staged task\n  agyc task [clear]               Inspect or discard an interrupted task\n  agyc init                       Create an optional AGENTS.md template\n  agyc -p "fix the tests"         Run one instruction and exit\n  agyc --attach <path>            Attach a file to the next instruction\n  agyc --model <name>             Choose a model\n  agyc --reasoning auto|low|high  Set reasoning effort\n  agyc --auth auto|google|api-key Set authentication\n  agyc --yes                      Allow commands without prompts\n\nCommands:\n  help                           Show this text\n  status                         Show current settings and connection health\n  doctor                         Check installation/runtime health\n  provider                       Show private provider status/provenance\n  provider update                Reinstall/update provider with rollback validation\n  resume                         Resume a task left by an interrupted process\n  task                           Show whether an interrupted task exists\n  task clear                     Discard an interrupted task and staged copy\n  init                           Create AGENTS.md when explicitly requested\n  attach <path>                  Attach image/PDF/Office/text file to next instruction\n  attach                         List pending attachments\n  attach clear                   Clear pending attachments\n  history                        Show project conversation history\n  history clear                  Clear project conversation history\n  history path                   Show external history file path\n  model                          Show current model\n  model <name>                   Change and persist model\n  reasoning                      Show reasoning effort\n  reasoning auto|low|high        Change and persist reasoning effort\n  auth                           Show authentication mode\n  auth auto|google|api-key       Change and persist authentication mode\n  approval                       Show command approval mode\n  approval ask|yes               Change and persist approval mode\n  login                          Verify or renew Google sign-in\n  clear                          Clear conversation state\n  cwd                            Print current directory\n  cls                            Clear the terminal\n  exit                           Exit\n`;
+  return `agyc ${version}\n\nUsage:\n  agyc                            Start in the current directory\n  agyc doctor                     Check local installation/runtime health\n  agyc login                      Verify or renew Google sign-in\n  agyc provider [status|update]   Inspect or update the private Google backend\n  agyc resume                     Resume an interrupted staged task\n  agyc task [clear]               Inspect or discard an interrupted task\n  agyc init                       Create an optional AGENTS.md template\n  agyc -m "fix the tests"         Send one text message and exit\n  agyc -p "fix the tests"         Same one-shot behavior as -m\n  agyc --attach <path>            Attach a file to the next instruction\n  agyc --model <name>             Choose a model\n  agyc --reasoning auto|low|high  Set reasoning effort\n  agyc --auth auto|google|api-key Set authentication\n  agyc --yes                      Allow commands without prompts\n  agyc --turbo                    Trusted autonomous execution for this launch\n  agyc --no-turbo                 Disable turbo and restore approval prompts for this launch\n\nCommands:\n  help                           Show this text\n  status                         Show current settings and connection health\n  doctor                         Check installation/runtime health\n  provider                       Show private provider status/provenance\n  provider update                Reinstall/update provider with rollback validation\n  resume                         Resume a task left by an interrupted process\n  task                           Show whether an interrupted task exists\n  task clear                     Discard an interrupted task and staged copy\n  init                           Create AGENTS.md when explicitly requested\n  attach <path>                  Attach image/PDF/Office/text file to next instruction\n  attach                         List pending attachments\n  attach clear                   Clear pending attachments\n  history                        Show project conversation history\n  history clear                  Clear project conversation history\n  history path                   Show external history file path\n  model                          Show current model\n  model <name>                   Change and persist model\n  reasoning                      Show reasoning effort\n  reasoning auto|low|high        Change and persist reasoning effort\n  auth                           Show authentication mode\n  auth auto|google|api-key       Change and persist authentication mode\n  approval                       Show command approval mode\n  approval ask|yes               Change and persist approval mode\n  turbo                          Show turbo mode\n  turbo on|off                   Change and persist turbo mode\n  login                          Verify or renew Google sign-in\n  clear                          Clear conversation state\n  cwd                            Print current directory\n  cls                            Clear the terminal\n  exit                           Exit\n`;
 }
 
-function promptLabel(workspace) {
-  return `${workspace}> `;
+export function promptLabel(workspace) {
+  return `agyc ${workspace}> `;
 }
 
 function resolveAuthMode(options) {
@@ -440,6 +443,24 @@ async function runInteractive(options, workspace, settingsStore) {
         continue;
       }
 
+      const turbo = commandArgument(line, 'turbo');
+      if (turbo !== null) {
+        if (!turbo) output.write(`${options.turbo ? 'on' : 'off'}\n\n`);
+        else if (!['on', 'off'].includes(turbo)) {
+          output.write('\nError: Turbo must be on or off.\n\n');
+        } else {
+          try {
+            const enabled = turbo === 'on';
+            await settingsStore.update(enabled ? { turbo: true, approval: 'yes' } : { turbo: false, approval: 'ask' });
+            options.turbo = enabled;
+            options.yes = enabled;
+          } catch (error) {
+            output.write(`\nError: ${error instanceof Error ? error.message : String(error)}\n\n`);
+          }
+        }
+        continue;
+      }
+
       if (line === 'status') {
         const turns = conversation.filter((message) => message.role === 'user').length;
         const authMode = resolveAuthMode(options);
@@ -451,7 +472,7 @@ async function runInteractive(options, workspace, settingsStore) {
           account = runtime.account;
         }
         const task = await taskStore.load().catch(() => null);
-        output.write(`model=${currentModel(options)} reasoning=${options.reasoning} auth=${authMode} approval=${options.yes ? 'yes' : 'ask'} backend=${backend} account=${account} attachments=${pendingAttachments.length} history=${turns} task=${task ? 'pending' : 'none'}\n\n`);
+        output.write(`model=${currentModel(options)} reasoning=${options.reasoning} auth=${authMode} approval=${options.yes ? 'yes' : 'ask'} turbo=${options.turbo ? 'on' : 'off'} backend=${backend} account=${account} attachments=${pendingAttachments.length} history=${turns} task=${task ? 'pending' : 'none'}\n\n`);
         continue;
       }
       if (line === 'login') {
@@ -562,8 +583,9 @@ async function runInteractive(options, workspace, settingsStore) {
           output.write('\nError: Approval must be ask or yes.\n\n');
         } else {
           try {
-            await settingsStore.update({ approval });
+            await settingsStore.update(approval === 'ask' ? { approval, turbo: false } : { approval });
             options.yes = approval === 'yes';
+            if (approval === 'ask') options.turbo = false;
           } catch (error) {
             output.write(`\nError: ${error instanceof Error ? error.message : String(error)}\n\n`);
           }
@@ -663,7 +685,8 @@ export async function main(argv = process.argv.slice(2)) {
   if (!['auto', 'google', 'api-key'].includes(options.auth)) {
     throw new Error('Invalid authentication setting. Use auto, google, or api-key.');
   }
-  options.yes = Boolean(options.yes);
+  options.turbo = Boolean(options.turbo);
+  options.yes = Boolean(options.yes || options.turbo);
 
   const authBootstrap = createGoogleAuthBootstrap(options, {
     notify: (message) => output.write(`${message}\n`)

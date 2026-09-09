@@ -17,6 +17,28 @@ test('API-key aliases choose the newest matching Gemini model', async () => {
   assert.equal(await resolveApiModel('gemini-3.8-flash', { apiKey: 'k', modelsLoader }), 'gemini-3.8-flash');
 });
 
+test('direct API system instruction keeps shell responses plain and ends with Summary', async () => {
+  let body = null;
+  const agent = new CodingAgent({
+    workspace: process.cwd(),
+    displayWorkspace: process.cwd(),
+    apiKey: 'test-key',
+    model: 'gemini-3.8-flash',
+    reasoning: 'auto',
+    tools: { execute: async () => '' },
+    fetchImpl: async (_url, options) => {
+      body = JSON.parse(options.body);
+      return { ok: true, status: 200, async json() { return { candidates: [{ content: { role: 'model', parts: [{ text: 'Done.\n\nSummary\nDone.' }] } }] }; } };
+    }
+  });
+
+  await agent.prompt('check the project');
+  const instruction = body.systemInstruction.parts[0].text;
+  assert.match(instruction, /Never use emojis/);
+  assert.match(instruction, /final section titled "Summary"/);
+  assert.match(instruction, /Summary section must be the last section/);
+});
+
 test('direct API request propagates AbortSignal and rejects cancellation', async () => {
   const controller = new AbortController();
   let started;

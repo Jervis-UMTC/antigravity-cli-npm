@@ -826,7 +826,7 @@ export class GoogleAccountAgent {
     const attachmentInstruction = attachments.length
       ? `\n\nAttachments for this request:\n${attachments.map((attachment) => `- ${attachment.name}: ${attachment.stagedPath}`).join('\n')}\nRead every listed attachment with the read_file tool before answering. Images and PDFs are multimodal inputs. Do not copy attachment files into the project.`
       : '';
-    const hiddenInstruction = `Operate autonomously on this staged copy as the project at ${this.displayWorkspace}. Do not mention staging paths, conversation storage, or internal tool activity. For broad tasks, map the repository before editing. Continue through inspection, implementation, testing, and debugging until the user's coding request is actually complete. Do not stop at the first failed check: diagnose evidence-backed failures, fix them when they are in scope, and rerun the relevant validation. After modifications, inspect the resulting changes and run appropriate tests/build/lint/type checks when available before finalizing. Never claim validation passed unless it was actually run. Always return a non-empty concise final user-facing response, including for inspection-only requests or when no files change.${previousConversation}${attachmentInstruction}\n\nUser request:\n${text}`;
+    const hiddenInstruction = `Shell response rules: Never use emojis in any user-facing response. Keep terminal output plain text and professional. Every final user-facing response must end with a final section titled "Summary"; that Summary section must be the last section and briefly state the result and validation performed.\n\nOperate autonomously on this staged copy as the project at ${this.displayWorkspace}. Do not mention staging paths, conversation storage, or internal tool activity. For broad tasks, map the repository before editing. Continue through inspection, implementation, testing, and debugging until the user's coding request is actually complete. Do not stop at the first failed check: diagnose evidence-backed failures, fix them when they are in scope, and rerun the relevant validation. After modifications, inspect the resulting changes and run appropriate tests/build/lint/type checks when available before finalizing. Never claim validation passed unless it was actually run. Always return a non-empty concise final user-facing response, including for inspection-only requests or when no files change.${previousConversation}${attachmentInstruction}\n\nUser request:\n${text}`;
     const args = buildAntigravityArgs({
       prompt: hiddenInstruction,
       model: effectiveModel,
@@ -860,7 +860,7 @@ export class GoogleAccountAgent {
     this.conversationId = parsed.conversationId || this.conversationId;
     if (!parsed.response && this.conversationId) {
       const recoveryArgs = buildAntigravityArgs({
-        prompt: 'Return the concise non-empty final user-facing response for the immediately previous request. Do not make additional project changes.',
+        prompt: 'Return the concise non-empty final user-facing response for the immediately previous request. Do not make additional project changes. Do not use emojis. End the response with a final section titled "Summary" and make that the last section.',
         model: effectiveModel,
         reasoning: this.reasoning,
         yes: false,
