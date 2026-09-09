@@ -1,11 +1,10 @@
 {
-  "name": "antigravity-cli-npm",
+  "name": "agyc",
   "version": "0.1.0",
   "description": "A minimal CMD-style AI coding agent that works in the project where it is launched.",
   "type": "module",
   "bin": {
-    "agyc": "bin/agy.js",
-    "antigravity-cli-npm": "bin/agy.js"
+    "agyc": "bin/agy.js"
   },
   "files": [
     "bin",
@@ -43,12 +42,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Jervis-UMTC/agyc.git"
+    "url": "git+https://github.com/Jervis-UMTC/antigravity-cli-npm.git"
   },
   "bugs": {
-    "url": "https://github.com/Jervis-UMTC/agyc/issues"
+    "url": "https://github.com/Jervis-UMTC/antigravity-cli-npm/issues"
   },
-  "homepage": "https://github.com/Jervis-UMTC/agyc#readme",
+  "homepage": "https://github.com/Jervis-UMTC/antigravity-cli-npm#readme",
   "publishConfig": {
     "access": "public"
   }

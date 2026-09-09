@@ -47,7 +47,7 @@ async function networkReachable(fetchImpl = globalThis.fetch) {
   const timer = setTimeout(() => controller.abort(), 5_000);
   timer.unref?.();
   try {
-    const response = await fetchImpl('https://registry.npmjs.org/antigravity-cli-npm', {
+    const response = await fetchImpl('https://registry.npmjs.org/agyc', {
       method: 'HEAD',
       signal: controller.signal
     });

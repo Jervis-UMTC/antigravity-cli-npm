@@ -1,6 +1,6 @@
 # agyc
 
-A coding agent that looks and behaves like a normal command prompt. The public command and repository name are `agyc`.
+A coding agent that looks and behaves like a normal command prompt. The npm package and public command are both `agyc`; the GitHub repository remains `Jervis-UMTC/antigravity-cli-npm`.
 
 `agyc` intentionally has no AI-style terminal interface: no startup banner, cards, panels, animated spinner, tool-call stream, model badge, reasoning display, assistant label, or live edit animation. Normal interactive startup is simply:
 
@@ -28,10 +28,10 @@ npm link
 After the package is published, the normal global install is:
 
 ```cmd
-npm install -g antigravity-cli-npm
+npm install -g agyc
 ```
 
-The public command and repository name are `agyc`. Do not use `agy`.
+The npm package and public command are `agyc`. Do not use `agy`.
 
 ### 2. Open the project and start `agyc`
 
@@ -193,14 +193,14 @@ node /path/to/antigravity-cli-npm/bin/agy.js
 Global install:
 
 ```cmd
-npm install -g antigravity-cli-npm
+npm install -g agyc
 agyc --version
 ```
 
 Project-local install:
 
 ```cmd
-npm install --save-dev antigravity-cli-npm
+npm install --save-dev agyc
 npx agyc --version
 ```
 
@@ -349,17 +349,16 @@ Then in another folder:
 mkdir C:\temp\agyc-test
 cd C:\temp\agyc-test
 npm init -y
-npm install C:\path\to\antigravity-cli-npm\antigravity-cli-npm-0.1.0.tgz
+npm install C:\path\to\antigravity-cli-npm\agyc-0.1.0.tgz
 npx agyc --version
 npx agyc --help
 npx agyc
 ```
 
-The public executable names are:
+The public executable name is:
 
 ```text
 agyc
-antigravity-cli-npm
 ```
 
 Git is optional. Git-aware operations are useful when Git exists, but the editing transaction itself is filesystem-based and works in ordinary folders too.

@@ -480,7 +480,7 @@ async function loadAntigravityPty() {
   try {
     return await import('@lydell/node-pty');
   } catch {
-    throw new Error('Official Antigravity browser sign-in support is unavailable. Reinstall antigravity-cli-npm.');
+    throw new Error('Official Antigravity browser sign-in support is unavailable. Reinstall agyc.');
   }
 }
 

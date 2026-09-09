@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to `antigravity-cli-npm` are documented here.
+All notable changes to the `agyc` npm package are documented here.
 
 ## 0.1.0 - 2026-09-09
 
@@ -8,7 +8,7 @@ Initial release candidate.
 
 ### Added
 
-- Minimal CMD-style interactive coding shell with `agyc` and `antigravity-cli-npm` entry points.
+- Minimal CMD-style interactive coding shell with the `agyc` entry point.
 - Hidden transactional editing in an OS-temporary staging copy for Git and non-Git projects.
 - Google subscription execution through Google's official Antigravity CLI headless backend.
 - Automatic isolated provider-backend installation, health validation, and repair without provider PATH takeover. npm `postinstall` now pre-provisions the official backend on a machine with no Antigravity installation; first Google use retries automatically if preinstall was offline.
@@ -26,12 +26,12 @@ Initial release candidate.
 - One-time automatic Windows npm PATH setup.
 - Removed the legacy `@google/gemini-cli`/Code Assist OAuth dependency and `oauth_creds.json` migration path from Google subscription authentication.
 - Added npm repository/bugs/homepage metadata and a script-free `npm publish --dry-run --json` release gate.
-- Renamed the public short command from `agy` to conflict-free `agyc`; `antigravity-cli-npm` remains as a package-name alias, while `agy` and `antigravity` are no longer exported by this package.
+- Published the package identity and sole public executable as `agyc`; `agy`, `antigravity`, and `antigravity-cli-npm` are not exported as public commands.
 - Moved the package-managed official Antigravity backend into a private per-user data directory instead of a public `agy` command directory.
 - Removed the `(no response)` placeholder. Empty successful provider replies now trigger a same-conversation final-response recovery request and fail explicitly if Google still returns no text.
 - Fixed headless project inspection/tool denial by running normal Google provider tools with auto-permission inside Antigravity's terminal sandbox; explicit `approval yes` retains unrestricted provider auto-permission inside the wrapper's disposable staging workspace.
 - Fixed Windows fresh-machine provider installation by passing the downloaded official `.cmd` installer to `cmd.exe` as discrete arguments instead of a nested quoted command string.
-- Strengthened direct API agent autonomy with a 60-step execution budget, transient model-request retries, head/tail-preserving compact tool-result context, enforced post-edit verification, stagnant-tool-loop detection/replanning, bounded large-file reads, and a compact `project_overview` tool for repository-scale tasks.
+- Strengthened direct API agent autonomy with a 120-step execution budget, transient model-request retries, head/tail-preserving compact tool-result context, enforced post-edit verification, stagnant-tool-loop detection/replanning, bounded large-file reads, and a compact `project_overview` tool for repository-scale tasks.
 - Strengthened Google subscription task instructions so the official Antigravity backend maps broad repositories, iterates after failed checks, and validates meaningful modifications before finalizing.
 - Added `agyc doctor` / `doctor` plain diagnostics for wrapper, Node/npm, workspace/state, command resolution, provider/account, provider provenance, and basic network health.
 - Added managed-provider provenance receipts with official installer URL plus installer/binary SHA-256 hashes, `provider` status, and `provider update` with post-install health validation and rollback. External provider overrides remain externally managed.
