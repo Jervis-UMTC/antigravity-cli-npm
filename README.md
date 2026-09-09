@@ -36,9 +36,24 @@ The agent works behind that prompt. It performs project edits in a private OS-te
 
 For Google subscription mode, `agyc` uses the official Antigravity CLI only as a hidden headless backend. A normal npm install pre-provisions that backend into a private per-user data location, even when the machine has no Antigravity installation. The provider binary is never added to PATH and never claims this package's `agyc` command. If pre-provisioning was temporarily offline, the first Google request retries the same bootstrap automatically.
 
-## Try it now from this repository
+## Start here: first use in 5 minutes
 
-The package does not need to be published to npm before you test it locally.
+If you only want to get `agyc` working, follow this section in order. You do not need to understand the provider internals first.
+
+### 1. Confirm Node.js and npm
+
+Run:
+
+```cmd
+node --version
+npm --version
+```
+
+`node --version` must report **v20 or newer**. If `node` or `npm` is not recognized, install a current Node.js 20+ release first, open a new terminal, and run the two commands again.
+
+### 2. Install `agyc`
+
+#### Option A — use this repository right now
 
 From the `antigravity-cli-npm` repository:
 
@@ -46,100 +61,209 @@ From the `antigravity-cli-npm` repository:
 npm install
 npm run check
 npm test
+```
+
+You can immediately verify the CLI without relying on PATH:
+
+```cmd
+node bin\agy.js --version
+node bin\agy.js --help
+```
+
+To make the short `agyc` command available from other folders:
+
+```cmd
 npm link
 ```
 
-On Windows, `npm install` / `npm link` performs the PATH setup automatically. The package detects npm's command directory and adds it to the **Windows user PATH only when missing**, preserving every existing PATH entry. Because this package uses the distinct `agyc` command, it does not need to reorder PATH entries to compete with Google's `agy`. The operation is idempotent and is skipped on non-Windows systems.
-
-A child npm process cannot modify the environment of an already-open parent CMD window. Therefore, after the **first** install/link on a machine, close that terminal and open one new terminal. After that, there is no repeated `set PATH=...` setup.
-
-Verify once in the new terminal:
+On Windows, if this is the first install/link on the machine, close that terminal and open **one new terminal** so it inherits any user-PATH update. Then verify:
 
 ```cmd
 where agyc
 agyc --version
 ```
 
-During that one initial terminal session, you can still invoke the generated shim directly without changing PATH:
+If `agyc` is still not found, do not get stuck on PATH. You can always run the repository entry point directly from the project you want to work on:
 
 ```cmd
-%APPDATA%\npm\agyc.cmd --version
+cd C:\projects\my-app
+node C:\path\to\antigravity-cli-npm\bin\agy.js
 ```
 
-No separate Google authentication command is required. Move to **any folder** you want the agent to work on and start `agyc`:
+On macOS/Linux, the equivalent direct fallback is:
+
+```bash
+cd ~/projects/my-app
+node /path/to/antigravity-cli-npm/bin/agy.js
+```
+
+#### Option B — after the package is published to npm
+
+Global install:
+
+```cmd
+npm install -g antigravity-cli-npm
+agyc --version
+```
+
+Project-local install:
+
+```cmd
+npm install --save-dev antigravity-cli-npm
+npx agyc --version
+```
+
+On Windows, a first global install may require one new terminal before `agyc` is found. The package adds npm's command directory only when missing; it does not reorder PATH entries.
+
+> Use **`agyc`**, not `agy`. This package deliberately does not export `agy` or `antigravity`, because Google's official Antigravity backend or another product may already own those names.
+
+### 3. Choose authentication
+
+For most users with a Google/Gemini subscription, use Google mode. You do **not** need to install Antigravity separately and you do **not** need to run `agyc login` first.
+
+```cmd
+agyc --auth google
+```
+
+Then enter a normal request. On a new device, the first request may open Google's official browser sign-in once. Complete the browser consent and return to the terminal; the original request continues automatically. Later sessions reuse the provider's secure account session.
+
+If you want to explicitly verify or renew the Google session:
+
+```cmd
+agyc login
+```
+
+If you want direct Gemini API-key mode instead, set `GEMINI_API_KEY` first.
+
+Windows CMD:
+
+```cmd
+set GEMINI_API_KEY=your_api_key_here
+agyc --auth api-key
+```
+
+PowerShell:
+
+```powershell
+$env:GEMINI_API_KEY="your_api_key_here"
+agyc --auth api-key
+```
+
+macOS/Linux:
+
+```bash
+export GEMINI_API_KEY="your_api_key_here"
+agyc --auth api-key
+```
+
+If a `GEMINI_API_KEY` is already present in your environment, `auth auto` prefers API-key mode. Use `agyc --auth google` when you specifically want the Google subscription backend.
+
+### 4. Open the project you actually want to work on
+
+`agyc` works in a Git repository **or** a normal folder. Change into the target folder first:
 
 ```cmd
 cd C:\projects\my-app
 agyc
 ```
 
-The target can be a Git repository:
+You should see only the normal current-directory prompt:
 
 ```text
-C:\projects\repo-with-git> agyc
-C:\projects\repo-with-git>
+C:\projects\my-app>
 ```
 
-or a completely ordinary folder with no `.git` directory:
+Do not start `agyc` from the `antigravity-cli-npm` source repository unless that is the project you actually want the agent to modify.
+
+### 5. Type a normal coding instruction
+
+Examples:
 
 ```text
-C:\projects\plain-folder> agyc
-C:\projects\plain-folder>
+C:\projects\my-app> check this project and explain the important parts
+C:\projects\my-app> find the cause of the failing tests and fix it
+C:\projects\my-app> add validation to the signup endpoint and run the relevant tests
+C:\projects\my-app> refactor this module without changing public behavior
 ```
 
-Git is optional. Git-aware operations are useful when Git is present, but the editing transaction itself is filesystem-based and does not depend on Git.
+For a request that takes more than a moment, you may briefly see one plain line such as `Preparing...`, `Inspecting...`, `Working...`, `Checking...`, or `Applying changes...`. It is erased before the final response.
 
-## Test the packaged tarball before publishing
+### 6. Run these two checks if anything looks wrong
 
-You can also test the same artifact npm would publish:
+Inside `agyc`:
+
+```text
+C:\projects\my-app> status
+C:\projects\my-app> doctor
+```
+
+`status` shows the selected model/auth/approval state and whether the backend/account are ready. `doctor` checks Node/npm, command resolution, state-directory access, provider/account health, provider provenance, and basic network reachability.
+
+### 7. Useful commands to know immediately
+
+```text
+help                    Show all commands
+status                  Show current runtime/auth state
+doctor                  Diagnose the local installation
+model list              Show available models
+model pro               Select/persist the pro alias
+reasoning high          Request stronger reasoning
+approval ask            Ask before direct API shell commands
+approval yes            Allow autonomous command execution
+attach <path>           Attach a screenshot/document to the next request
+history                  Show project conversation history
+clear                    Clear project conversation state
+task                     Show an interrupted task, if any
+resume                   Resume an abnormally interrupted staged task
+task clear               Discard an interrupted staged task
+provider                 Show private Google backend/provenance state
+provider update          Reinstall/update the managed Google backend safely
+cwd                      Print the current directory
+exit                     Exit
+```
+
+### 8. One-shot mode
+
+Run one instruction and exit:
+
+```cmd
+agyc -p "check this project and summarize it"
+```
+
+Run autonomously in a project you trust:
+
+```cmd
+agyc --yes -p "fix the failing tests and run the relevant validation"
+```
+
+### 9. Packaged-tarball test before npm publication
+
+To test the exact artifact npm would receive:
 
 ```cmd
 npm pack
 ```
 
-This creates a `.tgz` package in the repository. In another folder:
+Then in another folder:
 
 ```cmd
-mkdir C:\temp\agy-test
-cd C:\temp\agy-test
+mkdir C:\temp\agyc-test
+cd C:\temp\agyc-test
 npm init -y
 npm install C:\path\to\antigravity-cli-npm\antigravity-cli-npm-0.1.0.tgz
+npx agyc --version
 npx agyc --help
 npx agyc
 ```
 
-The package exposes the conflict-free short command and a package-name alias:
+The public executable names are:
 
-```cmd
+```text
 agyc
 antigravity-cli-npm
 ```
 
-This package deliberately does **not** export `agy` or `antigravity`. Google's official backend may already use `agy`, so both products can coexist on the same machine without PATH-order tricks.
-
-## Install after npm publication
-
-Global installation:
-
-```cmd
-npm install -g antigravity-cli-npm
-```
-
-On Windows, installation automatically adds npm's command directory to the user PATH if it is missing **and pre-installs the official Antigravity backend privately**. This works on a machine that has never installed Antigravity. On the first global install, open one new terminal afterward so that terminal inherits the updated user PATH; future terminals can run `agyc` directly with no extra setup.
-
-Then:
-
-```cmd
-cd C:\projects\my-app
-agyc
-```
-
-Project-local installation:
-
-```cmd
-npm install --save-dev antigravity-cli-npm
-npx agyc
-```
+Git is optional. Git-aware operations are useful when Git exists, but the editing transaction itself is filesystem-based and works in ordinary folders too.
 
 ## Zero-setup Google account bootstrap
 
@@ -903,6 +1027,56 @@ Before the real publish, verify `npm whoami` succeeds for the intended npm accou
 This repository is currently configured with version `0.1.0` and `publishConfig.access = public`. Publication is a separate explicit step; running the commands above does not publish anything.
 
 ## Troubleshooting
+
+### `agyc` is not recognized / command not found
+
+First confirm Node/npm work:
+
+```cmd
+node --version
+npm --version
+```
+
+If you are using this repository directly, run:
+
+```cmd
+cd C:\path\to\antigravity-cli-npm
+npm install
+npm link
+```
+
+On Windows, open one new terminal after the first link/install, then check:
+
+```cmd
+where agyc
+agyc --version
+```
+
+PowerShell equivalent:
+
+```powershell
+Get-Command agyc
+agyc --version
+```
+
+If PATH is still wrong, bypass it completely. Change to the project you want to work on and run the CLI by absolute path:
+
+```cmd
+cd C:\projects\my-app
+node C:\path\to\antigravity-cli-npm\bin\agy.js
+```
+
+The source file is still named `bin/agy.js`; the **public command is `agyc`**. Do not rename or depend on a public `agy` command.
+
+### I accidentally ran `agy` instead of `agyc`
+
+`agy` is not exported by this package. It may belong to Google's official Antigravity CLI or another installed product. Run:
+
+```cmd
+agyc --version
+```
+
+and use `agyc` for this npm wrapper.
 
 ### `Missing GEMINI_API_KEY`
 
