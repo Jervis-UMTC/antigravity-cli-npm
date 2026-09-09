@@ -20,15 +20,17 @@
     "postinstall": "node scripts/setup-path.js",
     "test": "node --test",
     "check": "node --check bin/agy.js && node --check src/cli.js && node --check src/activity.js && node --check src/agent.js && node --check src/attachments.js && node --check src/cancel.js && node --check src/history.js && node --check src/google-agent.js && node --check src/init.js && node --check src/settings.js && node --check src/staging.js && node --check src/tools.js && node --check scripts/setup-path.js",
-    "release:check": "npm run check && npm test && npm audit --audit-level=moderate && npm pack --dry-run --ignore-scripts",
+    "release:check": "npm run check && npm test && npm audit --audit-level=moderate && npm pack --dry-run --ignore-scripts && npm publish --dry-run --ignore-scripts --json",
     "prepublishOnly": "npm run release:check"
   },
   "dependencies": {
-    "@google/gemini-cli": "0.59.0",
+    "@lydell/node-pty": "1.1.0",
     "fflate": "0.8.3"
   },
   "keywords": [
     "ai",
+    "antigravity",
+    "google-antigravity",
     "cli",
     "coding-agent",
     "gemini",
@@ -38,6 +40,14 @@
     "node": ">=20"
   },
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Jervis-UMTC/antigravity-cli-npm.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Jervis-UMTC/antigravity-cli-npm/issues"
+  },
+  "homepage": "https://github.com/Jervis-UMTC/antigravity-cli-npm#readme",
   "publishConfig": {
     "access": "public"
   }

@@ -14,8 +14,26 @@ test('release metadata is explicit and production files include hardening module
   assert.equal(pkg.version, '0.1.0');
   assert.equal(pkg.license, 'MIT');
   assert.equal(pkg.publishConfig.access, 'public');
+  assert.equal(pkg.repository.url, 'git+https://github.com/Jervis-UMTC/antigravity-cli-npm.git');
+  assert.equal(pkg.bugs.url, 'https://github.com/Jervis-UMTC/antigravity-cli-npm/issues');
+  assert.equal(pkg.homepage, 'https://github.com/Jervis-UMTC/antigravity-cli-npm#readme');
+  assert.match(pkg.scripts['release:check'], /npm publish --dry-run --ignore-scripts --json/);
   assert.equal(pkg.bin.agy, 'bin/agy.js');
   assert.equal(pkg.dependencies.fflate, '0.8.3');
+  assert.equal(pkg.dependencies['@lydell/node-pty'], '1.1.0');
+  assert.equal(pkg.dependencies['@google/gemini-cli'], undefined);
+
+  const lock = JSON.parse(await fs.readFile(path.join(ROOT, 'package-lock.json'), 'utf8'));
+  const pty = lock.packages['node_modules/@lydell/node-pty'];
+  for (const platformPackage of [
+    '@lydell/node-pty-darwin-arm64', '@lydell/node-pty-darwin-x64',
+    '@lydell/node-pty-linux-arm64', '@lydell/node-pty-linux-x64',
+    '@lydell/node-pty-win32-arm64', '@lydell/node-pty-win32-x64'
+  ]) {
+    assert.equal(pty.optionalDependencies[platformPackage], '1.1.0');
+    assert.ok(lock.packages[`node_modules/${platformPackage}`], `missing ${platformPackage} from lockfile`);
+  }
+
   assert.ok(pkg.files.includes('LICENSE'));
   for (const file of ['LICENSE', 'src/settings.js', 'src/init.js', 'src/cancel.js']) {
     await fs.access(path.join(ROOT, file));

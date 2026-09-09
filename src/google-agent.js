@@ -1,23 +1,16 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
-import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { createRequire } from 'node:module';
-import { pathToFileURL } from 'node:url';
 import { conversationAsText, conversationForModel } from './history.js';
 import { cancellationError, throwIfAborted } from './cancel.js';
 
-const require = createRequire(import.meta.url);
 const MAX_CAPTURE_BYTES = 10 * 1024 * 1024;
 const REASONING_BUDGETS = { low: 1024, high: 8192 };
-const GOOGLE_OAUTH_AUTHORIZE_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
-const GOOGLE_OAUTH_TOKEN_URL = 'https://oauth2.googleapis.com/token';
-const GOOGLE_SIGN_IN_SUCCESS_URL = 'https://developers.google.com/gemini-code-assist/auth_success_gemini';
-const GOOGLE_SIGN_IN_FAILURE_URL = 'https://developers.google.com/gemini-code-assist/auth_failure_gemini';
-const OAUTH_TIMEOUT_MS = 5 * 60 * 1000;
-const GOOGLE_CREDENTIAL_REFRESH_SKEW_MS = 5 * 60 * 1000;
+const ANTIGRAVITY_LOGIN_TIMEOUT_MS = 5 * 60 * 1000;
+const ANTIGRAVITY_LOGIN_POLL_MS = 750;
+const MAX_LOGIN_CAPTURE_CHARS = 32_000;
 const PUBLIC_GEMINI_MODELS_URL = 'https://ai.google.dev/gemini-api/docs/models';
 const PUBLIC_MODEL_DISCOVERY_TIMEOUT_MS = 8 * 1000;
 const PUBLIC_MODEL_PAGE_MAX_BYTES = 2 * 1024 * 1024;
@@ -26,24 +19,8 @@ const ANTIGRAVITY_INSTALL_URLS = {
   default: 'https://antigravity.google/cli/install.sh'
 };
 const ANTIGRAVITY_PRINT_TIMEOUT = '10m';
-let oauthMetadataPromise = null;
-let bundledModelsPromise = null;
 let publicModelsPromise = null;
 const healthyBackendPaths = new Set();
-
-function geminiPackageDir() {
-  let packagePath;
-  try {
-    packagePath = require.resolve('@google/gemini-cli/package.json');
-  } catch {
-    throw new Error('Google account support is unavailable because @google/gemini-cli is not installed. Reinstall antigravity-cli-npm.');
-  }
-  return path.dirname(packagePath);
-}
-
-function geminiEntryPath() {
-  return path.join(geminiPackageDir(), 'bundle', 'gemini.js');
-}
 
 export function officialAntigravityBinaryPath({
   platform = process.platform,
@@ -346,59 +323,7 @@ export async function discoverPublicGoogleModels({
   }
 }
 
-export async function discoverBundledGoogleModels({ entryPath = geminiEntryPath() } = {}) {
-  if (entryPath === geminiEntryPath() && bundledModelsPromise) return bundledModelsPromise;
-
-  const discover = async () => {
-    const bundleDir = path.dirname(entryPath);
-    const entry = await fs.readFile(entryPath, 'utf8');
-    const imported = [...new Set(
-      [...entry.matchAll(/["']\.\/([A-Za-z0-9_-]+\.js)["']/g)].map((match) => match[1])
-    )];
-
-    for (const name of imported) {
-      try {
-        const module = await import(pathToFileURL(path.join(bundleDir, name)).href);
-        const definitions = module.DEFAULT_MODEL_CONFIGS?.modelDefinitions;
-        if (!definitions || typeof definitions !== 'object') continue;
-
-        const models = Object.entries(definitions)
-          .filter(([id, definition]) => /^(?:gemini|gemma)-/i.test(id) && definition?.isVisible === true)
-          .map(([id]) => id);
-        if (models.length) return uniqueModelIds(models);
-      } catch {
-        // Try the source-level fallback below if a provider chunk cannot be imported.
-      }
-    }
-
-    const models = [];
-    const constantPattern = /(?:DEFAULT|PREVIEW|SECONDARY)_GEMINI[A-Z0-9_]*_MODEL\s*=\s*["']([^"']+)["']/g;
-    for (const name of imported) {
-      let text;
-      try {
-        text = await fs.readFile(path.join(bundleDir, name), 'utf8');
-      } catch {
-        continue;
-      }
-      for (const match of text.matchAll(constantPattern)) {
-        if (/^gemini-\d/i.test(match[1])) models.push(match[1]);
-      }
-    }
-    return uniqueModelIds(models);
-  };
-
-  if (entryPath !== geminiEntryPath()) return discover();
-  bundledModelsPromise = discover();
-  try {
-    return await bundledModelsPromise;
-  } catch (error) {
-    bundledModelsPromise = null;
-    throw error;
-  }
-}
-
 export async function discoverGoogleModels({
-  entryPath = geminiEntryPath(),
   fetchImpl = globalThis.fetch,
   curlLoader = loadPublicModelPageWithCurl,
   publicModelsUrl = PUBLIC_GEMINI_MODELS_URL,
@@ -406,7 +331,7 @@ export async function discoverGoogleModels({
   platform = process.platform,
   officialModelsLoader = discoverOfficialAntigravityModels
 } = {}) {
-  const [officialResult, publicResult, bundledResult] = await Promise.allSettled([
+  const [officialResult, publicResult] = await Promise.allSettled([
     officialModelsLoader(),
     discoverPublicGoogleModels({
       fetchImpl,
@@ -414,8 +339,7 @@ export async function discoverGoogleModels({
       url: publicModelsUrl,
       timeoutMs: publicTimeoutMs,
       platform
-    }),
-    discoverBundledGoogleModels({ entryPath })
+    })
   ]);
 
   if (officialResult.status === 'fulfilled' && officialResult.value.length) {
@@ -423,333 +347,95 @@ export async function discoverGoogleModels({
   }
 
   const publicModels = publicResult.status === 'fulfilled' ? publicResult.value : [];
-  const bundledModels = bundledResult.status === 'fulfilled' ? bundledResult.value : [];
-  const models = uniqueModelIds([...publicModels, ...bundledModels]);
+  const models = uniqueModelIds(publicModels);
   if (models.length) return models;
 
   if (officialResult.status === 'rejected') throw officialResult.reason;
-  if (bundledResult.status === 'rejected') throw bundledResult.reason;
   if (publicResult.status === 'rejected') throw publicResult.reason;
   return [];
 }
 
-function parseOauthMetadata(text) {
-  const clientId = text.match(/OAUTH_CLIENT_ID\s*=\s*["']([^"']+)["']/)?.[1];
-  const clientSecret = text.match(/OAUTH_CLIENT_SECRET\s*=\s*["']([^"']+)["']/)?.[1];
-  const scopeBody = text.match(/OAUTH_SCOPE\s*=\s*\[([\s\S]*?)\];/)?.[1];
-  const scopes = scopeBody
-    ? [...scopeBody.matchAll(/["']([^"']+)["']/g)].map((match) => match[1])
-    : [];
-  if (!clientId || !clientSecret || scopes.length === 0) return null;
-
-  return {
-    clientId,
-    clientSecret,
-    scopes,
-    authorizationUrl: GOOGLE_OAUTH_AUTHORIZE_URL,
-    tokenUrl: GOOGLE_OAUTH_TOKEN_URL,
-    successUrl: text.match(/SIGN_IN_SUCCESS_URL\s*=\s*["']([^"']+)["']/)?.[1] || GOOGLE_SIGN_IN_SUCCESS_URL,
-    failureUrl: text.match(/SIGN_IN_FAILURE_URL\s*=\s*["']([^"']+)["']/)?.[1] || GOOGLE_SIGN_IN_FAILURE_URL
-  };
-}
-
-export async function loadGeminiOAuthMetadata() {
-  if (oauthMetadataPromise) return oauthMetadataPromise;
-
-  oauthMetadataPromise = (async () => {
-    const bundleDir = path.join(geminiPackageDir(), 'bundle');
-    const entry = await fs.readFile(path.join(bundleDir, 'gemini.js'), 'utf8');
-    const chunkNames = [...new Set(
-      [...entry.matchAll(/["']\.\/(chunk-[A-Za-z0-9_-]+\.js)["']/g)].map((match) => match[1])
-    )];
-
-    for (const chunkName of chunkNames) {
-      const candidate = path.join(bundleDir, chunkName);
-      const text = await fs.readFile(candidate, 'utf8');
-      if (!text.includes('OAUTH_CLIENT_ID')) continue;
-      const metadata = parseOauthMetadata(text);
-      if (metadata) return metadata;
-    }
-
-    throw new Error('This @google/gemini-cli build does not contain the OAuth metadata required for Google sign-in. Reinstall the supported package version and try again.');
-  })();
-
+async function loadAntigravityPty() {
   try {
-    return await oauthMetadataPromise;
-  } catch (error) {
-    oauthMetadataPromise = null;
-    throw error;
-  }
-}
-
-export function geminiOAuthCredentialsPath({ env = process.env, home = os.homedir() } = {}) {
-  const providerHome = env.GEMINI_CLI_HOME || home;
-  return path.join(providerHome, '.gemini', 'oauth_creds.json');
-}
-
-export function buildGoogleAuthUrl(metadata, redirectUri, state) {
-  const url = new URL(metadata.authorizationUrl || GOOGLE_OAUTH_AUTHORIZE_URL);
-  url.searchParams.set('client_id', metadata.clientId);
-  url.searchParams.set('redirect_uri', redirectUri);
-  url.searchParams.set('response_type', 'code');
-  url.searchParams.set('access_type', 'offline');
-  url.searchParams.set('scope', metadata.scopes.join(' '));
-  url.searchParams.set('state', state);
-  url.searchParams.set('prompt', 'consent select_account');
-  return url.toString();
-}
-
-export function browserLaunchCommand(url, platform = process.platform) {
-  if (platform === 'win32') {
-    return { command: 'rundll32.exe', args: ['url.dll,FileProtocolHandler', url] };
-  }
-  if (platform === 'darwin') return { command: 'open', args: [url] };
-  return { command: 'xdg-open', args: [url] };
-}
-
-async function openBrowserUrl(url, spawnImpl = spawn) {
-  const launch = browserLaunchCommand(url);
-  await new Promise((resolve, reject) => {
-    const child = spawnImpl(launch.command, launch.args, {
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: true
-    });
-    child.once('error', reject);
-    child.once('spawn', () => {
-      child.unref();
-      resolve();
-    });
-  });
-}
-
-async function readCachedCredentials(credentialsPath) {
-  try {
-    const body = JSON.parse(await fs.readFile(credentialsPath, 'utf8'));
-    return body && typeof body === 'object' ? body : null;
-  } catch (error) {
-    if (error && typeof error === 'object' && error.code === 'ENOENT') return null;
-    return null;
-  }
-}
-
-async function writeCachedCredentials(credentialsPath, credentials) {
-  await fs.mkdir(path.dirname(credentialsPath), { recursive: true });
-  await fs.writeFile(credentialsPath, `${JSON.stringify(credentials, null, 2)}\n`, {
-    encoding: 'utf8',
-    mode: 0o600
-  });
-  try {
-    await fs.chmod(credentialsPath, 0o600);
+    return await import('@lydell/node-pty');
   } catch {
-    // Windows may not support POSIX file modes. The file remains user-profile scoped.
+    throw new Error('Official Antigravity browser sign-in support is unavailable. Reinstall antigravity-cli-npm.');
   }
 }
 
-function normalizeTokenCredentials(body, existingCredentials = null, now = Date.now()) {
-  if (!body?.access_token) throw new Error('Google token response did not contain an access token.');
-
-  const credentials = { ...(existingCredentials || {}), ...body };
-  if (body.expires_in !== undefined) {
-    credentials.expiry_date = now + Number(body.expires_in) * 1000;
-    delete credentials.expires_in;
-  }
-  if (!credentials.refresh_token && existingCredentials?.refresh_token) {
-    credentials.refresh_token = existingCredentials.refresh_token;
-  }
-  if (!credentials.refresh_token) {
-    throw new Error('Google did not return a refresh token. Retry sign-in and approve account access.');
-  }
-  return credentials;
+function stripTerminalControl(value) {
+  return String(value || '')
+    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '')
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
-function oauthTokenError(body, status, fallback) {
-  const message = body?.error_description || body?.error || fallback || `Google token request failed with HTTP ${status}.`;
-  const error = new Error(message);
-  error.oauthCode = typeof body?.error === 'string' ? body.error : null;
-  return error;
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function parseTokenResponse(response, fallbackMessage) {
-  const raw = await response.text();
-  let body;
-  try {
-    body = JSON.parse(raw);
-  } catch {
-    throw new Error('Google returned an invalid token response.');
-  }
-  if (!response.ok) throw oauthTokenError(body, response.status, fallbackMessage);
-  return body;
-}
-
-export async function ensureGoogleCredentials({
-  metadataLoader = loadGeminiOAuthMetadata,
-  fetchImpl = globalThis.fetch,
-  credentialsPath = geminiOAuthCredentialsPath(),
-  now = Date.now(),
-  refreshSkewMs = GOOGLE_CREDENTIAL_REFRESH_SKEW_MS
+export async function runOfficialAntigravityLogin({
+  ensureImpl = ensureOfficialAntigravityCli,
+  accountProbe = probeOfficialAntigravityAccount,
+  ptyLoader = loadAntigravityPty,
+  timeoutMs = ANTIGRAVITY_LOGIN_TIMEOUT_MS,
+  pollMs = ANTIGRAVITY_LOGIN_POLL_MS,
+  env = process.env
 } = {}) {
-  const credentials = await readCachedCredentials(credentialsPath);
-  if (!credentials?.refresh_token) return null;
+  if (await accountProbe({ ensureImpl })) return true;
 
-  const expiry = Number(credentials.expiry_date);
-  if (credentials.access_token && Number.isFinite(expiry) && expiry > now + refreshSkewMs) {
-    return credentials;
-  }
-  if (typeof fetchImpl !== 'function') {
-    throw new Error('Refreshing Google login requires Node.js fetch support. Use Node.js 20 or newer.');
-  }
+  const binary = await ensureImpl();
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-official-login-'));
+  let terminal = null;
+  let output = '';
+  let exited = false;
+  let exitCode = null;
 
-  const metadata = await metadataLoader();
-  const form = new URLSearchParams({
-    client_id: metadata.clientId,
-    client_secret: metadata.clientSecret,
-    refresh_token: credentials.refresh_token,
-    grant_type: 'refresh_token'
-  });
-  const response = await fetchImpl(metadata.tokenUrl || GOOGLE_OAUTH_TOKEN_URL, {
-    method: 'POST',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: form
-  });
-  const body = await parseTokenResponse(response, 'Google login refresh failed.');
-  const refreshed = normalizeTokenCredentials(body, credentials, now);
-  await writeCachedCredentials(credentialsPath, refreshed);
-  return refreshed;
-}
-
-async function exchangeAuthorizationCode({ metadata, code, redirectUri, fetchImpl, existingCredentials }) {
-  const form = new URLSearchParams({
-    client_id: metadata.clientId,
-    client_secret: metadata.clientSecret,
-    code,
-    grant_type: 'authorization_code',
-    redirect_uri: redirectUri
-  });
-  const response = await fetchImpl(metadata.tokenUrl || GOOGLE_OAUTH_TOKEN_URL, {
-    method: 'POST',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: form
-  });
-  const body = await parseTokenResponse(response, 'Google token exchange failed.');
-  return normalizeTokenCredentials(body, existingCredentials);
-}
-
-function parseCallbackPort(value) {
-  if (!value) return 0;
-  const port = Number.parseInt(value, 10);
-  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
-    throw new Error(`Invalid OAUTH_CALLBACK_PORT: ${value}`);
-  }
-  return port;
-}
-
-async function startOAuthCallback({ metadata, state, fetchImpl, credentialsPath, timeoutMs, callbackPort }) {
-  const existingCredentials = await readCachedCredentials(credentialsPath);
-  let redirectUri = null;
-  let settled = false;
-  let timer = null;
-  let resolveCompletion;
-  let rejectCompletion;
-
-  const completion = new Promise((resolve, reject) => {
-    resolveCompletion = resolve;
-    rejectCompletion = reject;
-  });
-
-  const server = http.createServer(async (request, response) => {
-    const requestUrl = new URL(request.url || '/', 'http://127.0.0.1');
-    if (requestUrl.pathname !== '/oauth2callback') {
-      response.writeHead(404);
-      response.end();
-      return;
+  try {
+    const ptyModule = await ptyLoader();
+    const spawnPty = ptyModule.spawn || ptyModule.default?.spawn;
+    if (typeof spawnPty !== 'function') {
+      throw new Error('Official Antigravity browser sign-in support could not initialize a hidden terminal.');
     }
 
-    const finish = (error = null) => {
-      if (settled) return;
-      settled = true;
-      if (timer) clearTimeout(timer);
-      server.close(() => {});
-      if (error) rejectCompletion(error);
-      else resolveCompletion();
-    };
-
-    const providerError = requestUrl.searchParams.get('error');
-    if (providerError) {
-      response.writeHead(302, { Location: metadata.failureUrl || GOOGLE_SIGN_IN_FAILURE_URL });
-      response.end();
-      finish(new Error(requestUrl.searchParams.get('error_description') || providerError));
-      return;
-    }
-    if (requestUrl.searchParams.get('state') !== state) {
-      response.writeHead(400);
-      response.end('Invalid OAuth state.');
-      finish(new Error('Google sign-in returned an invalid state value.'));
-      return;
-    }
-
-    const code = requestUrl.searchParams.get('code');
-    if (!code) {
-      response.writeHead(400);
-      response.end('Missing authorization code.');
-      finish(new Error('Google sign-in did not return an authorization code.'));
-      return;
-    }
-
-    try {
-      const credentials = await exchangeAuthorizationCode({
-        metadata,
-        code,
-        redirectUri,
-        fetchImpl,
-        existingCredentials
-      });
-      await writeCachedCredentials(credentialsPath, credentials);
-      response.writeHead(302, { Location: metadata.successUrl || GOOGLE_SIGN_IN_SUCCESS_URL });
-      response.end();
-      finish();
-    } catch (error) {
-      response.writeHead(302, { Location: metadata.failureUrl || GOOGLE_SIGN_IN_FAILURE_URL });
-      response.end();
-      finish(error instanceof Error ? error : new Error(String(error)));
-    }
-  });
-
-  const port = await new Promise((resolve, reject) => {
-    const onError = (error) => reject(error);
-    server.once('error', onError);
-    server.listen(callbackPort, '127.0.0.1', () => {
-      server.off('error', onError);
-      const address = server.address();
-      resolve(typeof address === 'object' && address ? address.port : callbackPort);
+    terminal = spawnPty(binary, [], {
+      name: 'xterm-256color',
+      cols: 100,
+      rows: 30,
+      cwd,
+      env: googleAccountEnv(env)
     });
-  });
 
-  redirectUri = `http://127.0.0.1:${port}/oauth2callback`;
-  server.on('error', (error) => {
-    if (settled) return;
-    settled = true;
-    if (timer) clearTimeout(timer);
-    rejectCompletion(error);
-  });
-  timer = setTimeout(() => {
-    if (settled) return;
-    settled = true;
-    server.close(() => {});
-    rejectCompletion(new Error('Google sign-in timed out after 5 minutes.'));
-  }, timeoutMs);
-  timer.unref?.();
+    terminal.onData?.((chunk) => {
+      output = `${output}${String(chunk || '')}`.slice(-MAX_LOGIN_CAPTURE_CHARS);
+    });
+    terminal.onExit?.((event) => {
+      exited = true;
+      exitCode = event?.exitCode ?? null;
+    });
 
-  return {
-    redirectUri,
-    completion,
-    close: async () => {
-      if (settled) return;
-      settled = true;
-      if (timer) clearTimeout(timer);
-      await new Promise((resolve) => server.close(resolve));
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (await accountProbe({ ensureImpl: async () => binary })) return true;
+      if (exited) break;
+      await wait(pollMs);
     }
-  };
+
+    if (await accountProbe({ ensureImpl: async () => binary })) return true;
+
+    const detail = stripTerminalControl(output).slice(-1500);
+    if (exited) {
+      throw new Error(
+        `Official Antigravity sign-in ended before authentication completed${exitCode === null ? '' : ` (exit ${exitCode})`}${detail ? `: ${detail}` : '.'}`
+      );
+    }
+    throw new Error(`Official Antigravity sign-in timed out${detail ? `: ${detail}` : '.'}`);
+  } finally {
+    try { terminal?.kill?.(); } catch {}
+    await fs.rm(cwd, { recursive: true, force: true });
+  }
 }
 
 function normalizeReasoning(value) {
@@ -823,31 +509,6 @@ export function googleAccountEnv(source = process.env, defaultsPath = null) {
   }
 
   return env;
-}
-
-export function parseGeminiJson(text) {
-  const trimmed = String(text || '').trim();
-  if (!trimmed) throw new Error('Gemini CLI returned no output.');
-
-  let body;
-  try {
-    body = JSON.parse(trimmed);
-  } catch {
-    throw new Error(`Gemini CLI returned invalid JSON: ${trimmed.slice(0, 500)}`);
-  }
-
-  if (body.error) {
-    const message = typeof body.error === 'string'
-      ? body.error
-      : body.error.message || JSON.stringify(body.error);
-    throw new Error(message);
-  }
-
-  if (typeof body.response !== 'string') {
-    throw new Error('Gemini CLI response did not contain a text response.');
-  }
-
-  return body.response.trim() || '(no response)';
 }
 
 export function parseAntigravityJson(text) {
@@ -969,76 +630,21 @@ export async function googleRuntimeStatus({
 }
 
 export async function loginWithGoogle({
-  metadataLoader = loadGeminiOAuthMetadata,
-  openBrowser = openBrowserUrl,
-  fetchImpl = globalThis.fetch,
-  credentialsPath = geminiOAuthCredentialsPath(),
-  timeoutMs = OAUTH_TIMEOUT_MS,
-  callbackPort = parseCallbackPort(process.env.OAUTH_CALLBACK_PORT),
   notify = () => {},
   officialProbe = probeOfficialAntigravityAccount,
+  officialLogin = runOfficialAntigravityLogin,
   officialVerify = verifyOfficialAntigravitySubscription
 } = {}) {
   if (await officialProbe()) return;
 
-  let cached = null;
-  try {
-    cached = await ensureGoogleCredentials({ metadataLoader, fetchImpl, credentialsPath });
-  } catch {
-    // A revoked or otherwise unusable cached refresh token falls through to browser reauthentication.
+  notify('Complete sign-in in your browser.');
+  await officialLogin({ accountProbe: officialProbe });
+
+  if (!await officialProbe()) {
+    throw new Error('Official Antigravity sign-in completed without creating a usable subscription session.');
   }
 
-  if (!cached) {
-    if (typeof fetchImpl !== 'function') {
-      throw new Error('Google sign-in requires Node.js fetch support. Use Node.js 20 or newer.');
-    }
-
-    let metadata;
-    try {
-      metadata = await metadataLoader();
-    } catch (error) {
-      throw new Error(`Google sign-in could not start: ${error instanceof Error ? error.message : String(error)}`);
-    }
-
-    const state = crypto.randomBytes(32).toString('hex');
-    let callback;
-    try {
-      callback = await startOAuthCallback({
-        metadata,
-        state,
-        fetchImpl,
-        credentialsPath,
-        timeoutMs,
-        callbackPort
-      });
-    } catch (error) {
-      throw new Error(`Google sign-in could not start the local callback: ${error instanceof Error ? error.message : String(error)}`);
-    }
-
-    const authUrl = buildGoogleAuthUrl(metadata, callback.redirectUri, state);
-    notify('Complete sign-in in your browser.');
-
-    try {
-      await openBrowser(authUrl);
-    } catch {
-      notify(`Browser could not open automatically. Open this URL:\n${authUrl}`);
-    }
-
-    try {
-      await callback.completion;
-    } catch (error) {
-      throw new Error(`Google sign-in failed: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-
-  if (await officialProbe()) {
-    await officialVerify();
-    return;
-  }
-  throw new Error(
-    'Google sign-in is saved, but the official Antigravity subscription session is not active. ' +
-    'The installed Google Antigravity CLI could not migrate the saved account into its secure keyring.'
-  );
+  await officialVerify();
 }
 
 export class GoogleAccountAgent {
@@ -1114,7 +720,9 @@ export class GoogleAccountAgent {
       } catch {}
       const detail = (structuredError || result.stderr || result.stdout || '').trim();
       if (/auth(?:entication)? required|not authenticated|sign.?in|log.?in|credential/i.test(detail)) {
-        throw new Error('Google subscription sign-in is required. Run `agy login`.');
+        const error = new Error('Google subscription session became unavailable. Retry the request; official Antigravity sign-in will reopen automatically if needed.');
+        error.code = 'GOOGLE_AUTH_REQUIRED';
+        throw error;
       }
       throw new Error(`Google subscription request failed${detail ? `: ${detail}` : '.'}`);
     }

@@ -64,13 +64,7 @@ During that one initial terminal session, you can still invoke the generated shi
 %APPDATA%\npm\agy.cmd --version
 ```
 
-If you want Google-account authentication:
-
-```cmd
-agy login
-```
-
-Then move to **any folder** you want the agent to work on:
+No separate Google authentication command is required. Move to **any folder** you want the agent to work on and start `agy`:
 
 ```cmd
 cd C:\projects\my-app
@@ -143,23 +137,19 @@ npm install --save-dev antigravity-cli-npm
 npx agy
 ```
 
-## First login with a Google/Gemini account
+## Zero-setup Google account bootstrap
 
-Run:
-
-```cmd
-agy login
-```
+You do **not** need to run `agy login` before using the CLI. Start `agy` normally and enter your first request. In Google mode, that request automatically ensures the official backend is installed and healthy, checks the native Antigravity secure session, and starts the official browser sign-in flow only when that device actually needs authentication.
 
 Google subscription mode now executes through Google's **official Antigravity CLI headless client**, rather than the older Gemini CLI / Code Assist client that rejects personal accounts. The provider binary is invoked by its absolute per-user path, with JSON output captured internally, so its TUI, progress stream, slash commands, banners, and tool narration do not appear inside this wrapper.
 
 On Windows the official backend normally lives at `%LOCALAPPDATA%\agy\bin\agy.exe`; on macOS/Linux it normally lives at `~/.local/bin/agy`. `agy` can install that backend automatically with the provider's official installer using `--skip-path --skip-aliases`, which prevents the provider binary from taking over the npm wrapper's command name. The binary is health-checked before first use in each wrapper process; an unhealthy default backend is replaced through the official installer, while an explicit `ANTIGRAVITY_CLI_BINARY` override is never silently deleted. The provider remains responsible for its own normal self-update behavior.
 
-Authentication is persistent through the official Antigravity secure account session, including Windows Credential Manager on Windows. `agy login` first probes that official session and returns silently when it is already usable. After a newly established/migrated login, `agy` performs one hidden headless verification request in an empty OS-temporary directory so a successful login means the subscription can actually answer a request. For migration/first-login compatibility, this package retains its browser-only Google OAuth flow based on the pinned `@google/gemini-cli` metadata; the saved account can then be migrated by the official Antigravity client into its native keyring. No provider terminal TUI is launched by this wrapper.
+Authentication is persistent through the official Antigravity secure account session, including Windows Credential Manager on Windows. Normal `agy` requests probe that native session automatically and continue silently when it is already usable. On a first use on a new device/user profile, the wrapper starts the official Antigravity binary with no arguments inside a hidden pseudo-terminal rooted in an empty OS-temporary directory. The official client itself opens its Antigravity browser sign-in flow and writes its native secure-keyring session; all provider terminal rendering remains captured and invisible. As soon as the official session becomes usable, the hidden bootstrap process is stopped and `agy` performs one headless verification request before continuing the original request. There is no Gemini CLI/Code Assist OAuth fallback, no `oauth_creds.json`, and no credential-migration step.
 
 Antigravity **IDE** is not required. The official Antigravity **CLI backend** is the supported Google subscription transport and is intentionally hidden behind this package's CMD-style interface.
 
-Use the Google account associated with the Gemini subscription you want to use. If Google requires account onboarding that cannot be completed through the saved browser authorization/keyring migration, `agy login` reports that condition instead of silently falling back to the unsupported Code Assist client.
+Use the Google account associated with the subscription you want Antigravity to use. A brand-new device may still require you to approve Google's browser sign-in once because the provider's secure session is device-local; that is identity consent, not CLI setup. Afterward, normal restarts and projects reuse the session automatically. `agy login` remains available only as an explicit verification/renewal command. The wrapper never falls back to Gemini CLI or Code Assist authentication.
 
 Some organization or Workspace environments may additionally require a Google Cloud project:
 
@@ -167,7 +157,7 @@ Some organization or Workspace environments may additionally require a Google Cl
 set GOOGLE_CLOUD_PROJECT=your-project-id
 ```
 
-After authentication, normal use returns to the plain `agy` prompt.
+After any required first-device browser consent completes, the original request continues and later use stays on the plain `agy` prompt.
 
 ## API-key authentication
 
@@ -318,7 +308,7 @@ flash-lite
 
 `model list` is discovery-backed rather than a hard-coded release list. In Google subscription mode, `agy` first runs the official Antigravity backend's `models` command with all provider progress captured. That makes the list reflect models actually offered to the signed-in subscription. Effort-specific provider slugs such as `gemini-3.8-flash-high` are normalized to the base model `gemini-3.8-flash`, because this wrapper keeps reasoning effort as a separate `reasoning` setting.
 
-If official subscription discovery is unavailable, `agy` falls back to Google's public Gemini model documentation and the pinned `@google/gemini-cli` catalog. In API-key mode, it uses the live Gemini `/models` endpoint and keeps models that support `generateContent`. The short names `auto`, `pro`, `flash`, and `flash-lite` remain convenience choices and resolve dynamically to the newest matching model available through the active provider; an unavailable alias fails clearly instead of silently selecting another model.
+If official subscription discovery is unavailable, `agy` falls back to Google's public Gemini model documentation. In API-key mode, it uses the live Gemini `/models` endpoint and keeps models that support `generateContent`. The short names `auto`, `pro`, `flash`, and `flash-lite` remain convenience choices and resolve dynamically to the newest matching model available through the active provider; an unavailable alias fails clearly instead of silently selecting another model.
 
 Change the model silently:
 
@@ -863,12 +853,13 @@ Recommended local release verification:
 
 ```cmd
 npm ci
-npm run check
-npm test
-npm pack --dry-run
+npm run release:check
+npm publish --dry-run --json
 ```
 
-Then inspect the tarball/package contents and only publish when the package name, metadata, license, and npm account are ready. This package is configured as MIT licensed and includes `LICENSE` in the published files.
+`release:check` runs syntax validation, the full test suite, a moderate-or-higher vulnerability audit, a package dry-run, and a script-free publish dry-run. The explicit `npm publish --dry-run --json` command then exercises the normal `prepublishOnly` lifecycle exactly as a real publish would, without uploading anything.
+
+Before the real publish, verify `npm whoami` succeeds for the intended npm account. Then inspect the package contents and only publish when the package name, metadata, license, account, and two-factor/token policy are ready. This package is configured as MIT licensed and includes `LICENSE` in the published files. Its npm metadata points to the GitHub repository, issue tracker, and README homepage.
 
 This repository is currently configured with version `0.1.0` and `publishConfig.access = public`. Publication is a separate explicit step; running the commands above does not publish anything.
 
@@ -885,28 +876,17 @@ set GEMINI_API_KEY=your_key
 agy --auth api-key
 ```
 
-or:
+or switch back to Google mode:
 
 ```cmd
-agy login
 agy --auth google
 ```
 
-### Google mode says to run `agy login`
+Google mode does not require a separate login command. Your first normal request automatically installs/repairs the official Antigravity backend if necessary and opens the official browser sign-in only when the native secure session is missing. Once approved on that device, later requests and restarts reuse the secure session silently. The wrapper does not create or read Gemini CLI `oauth_creds.json` credentials.
 
-Run:
+### Google browser sign-in appears on a new device
 
-```cmd
-agy login
-```
-
-You should see only:
-
-```text
-Complete sign-in in your browser.
-```
-
-Complete Google sign-in in the browser and try again. The resulting refresh token is persistent, so normal restarts do not require another login. If you run `agy login` while the cached credential is still reusable, it returns silently without opening a browser. If an older `agy login` process is sitting on a missing `oauth_creds.json` message, stop that old process with `Ctrl+C` and rerun `agy login` from the current linked source.
+This is expected once per device/user profile when the official Antigravity keyring has no usable session. Finish the provider's browser consent and the original `agy` request continues automatically. No additional CLI command is required.
 
 ### The target folder has no `.git`
 
@@ -948,4 +928,4 @@ C:\project> clear
 
 ## License
 
-The current package metadata is `UNLICENSED`. Update the license before public distribution if a different licensing policy is intended.
+MIT. See `LICENSE`.

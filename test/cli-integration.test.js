@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { createGoogleAuthBootstrap } from '../src/cli.js';
 
 const CLI = fileURLToPath(new URL('../bin/agy.js', import.meta.url));
 
@@ -101,6 +102,33 @@ function writeFileCall(file, content) {
     }
   };
 }
+
+test('normal Google use bootstraps authentication once without a separate login command', async () => {
+  const options = { auth: 'google' };
+  const notices = [];
+  let loginCalls = 0;
+  const bootstrap = createGoogleAuthBootstrap(options, {
+    notify: (message) => notices.push(message),
+    login: async ({ notify }) => {
+      loginCalls += 1;
+      notify('browser sign-in');
+    }
+  });
+
+  assert.equal(await bootstrap.ensure(), true);
+  assert.equal(await bootstrap.ensure(), true);
+  assert.equal(loginCalls, 1);
+  assert.deepEqual(notices, ['browser sign-in']);
+
+  options.auth = 'api-key';
+  bootstrap.reset();
+  assert.equal(await bootstrap.ensure(), false);
+  assert.equal(loginCalls, 1);
+
+  options.auth = 'google';
+  assert.equal(await bootstrap.ensure(), true);
+  assert.equal(loginCalls, 2);
+});
 
 test('one-shot editing works in a folder with no Git repository', async () => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-nogit-cli-'));

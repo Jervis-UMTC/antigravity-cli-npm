@@ -93,7 +93,7 @@ function parseArgs(argv) {
 }
 
 function helpText(version) {
-  return `agy ${version}\n\nUsage:\n  agy                            Start in the current directory\n  agy login                      Authenticate\n  agy init                       Create an optional AGENTS.md template\n  agy -p "fix the tests"         Run one instruction and exit\n  agy --attach <path>            Attach a file to the next instruction\n  agy --model <name>             Choose a model\n  agy --reasoning auto|low|high  Set reasoning effort\n  agy --auth auto|google|api-key Set authentication\n  agy --yes                      Allow commands without prompts\n\nCommands:\n  help                           Show this text\n  status                         Show current settings and connection health\n  init                           Create AGENTS.md when explicitly requested\n  attach <path>                  Attach image/PDF/Office/text file to next instruction\n  attach                         List pending attachments\n  attach clear                   Clear pending attachments\n  history                        Show project conversation history\n  history clear                  Clear project conversation history\n  history path                   Show external history file path\n  model                          Show current model\n  model <name>                   Change and persist model\n  reasoning                      Show reasoning effort\n  reasoning auto|low|high        Change and persist reasoning effort\n  auth                           Show authentication mode\n  auth auto|google|api-key       Change and persist authentication mode\n  approval                       Show command approval mode\n  approval ask|yes               Change and persist approval mode\n  login                          Authenticate with Google\n  clear                          Clear conversation state\n  cwd                            Print current directory\n  cls                            Clear the terminal\n  exit                           Exit\n`;
+  return `agy ${version}\n\nUsage:\n  agy                            Start in the current directory\n  agy login                      Verify or renew Google sign-in\n  agy init                       Create an optional AGENTS.md template\n  agy -p "fix the tests"         Run one instruction and exit\n  agy --attach <path>            Attach a file to the next instruction\n  agy --model <name>             Choose a model\n  agy --reasoning auto|low|high  Set reasoning effort\n  agy --auth auto|google|api-key Set authentication\n  agy --yes                      Allow commands without prompts\n\nCommands:\n  help                           Show this text\n  status                         Show current settings and connection health\n  init                           Create AGENTS.md when explicitly requested\n  attach <path>                  Attach image/PDF/Office/text file to next instruction\n  attach                         List pending attachments\n  attach clear                   Clear pending attachments\n  history                        Show project conversation history\n  history clear                  Clear project conversation history\n  history path                   Show external history file path\n  model                          Show current model\n  model <name>                   Change and persist model\n  reasoning                      Show reasoning effort\n  reasoning auto|low|high        Change and persist reasoning effort\n  auth                           Show authentication mode\n  auth auto|google|api-key       Change and persist authentication mode\n  approval                       Show command approval mode\n  approval ask|yes               Change and persist approval mode\n  login                          Verify or renew Google sign-in\n  clear                          Clear conversation state\n  cwd                            Print current directory\n  cls                            Clear the terminal\n  exit                           Exit\n`;
 }
 
 function promptLabel(workspace) {
@@ -103,6 +103,29 @@ function promptLabel(workspace) {
 function resolveAuthMode(options) {
   if (options.auth !== 'auto') return options.auth;
   return process.env.GEMINI_API_KEY ? 'api-key' : 'google';
+}
+
+export function createGoogleAuthBootstrap(options, {
+  login = loginWithGoogle,
+  notify = () => {}
+} = {}) {
+  let ready = false;
+
+  return {
+    reset() {
+      ready = false;
+    },
+    markReady() {
+      ready = true;
+    },
+    async ensure() {
+      if (resolveAuthMode(options) !== 'google') return false;
+      if (ready) return true;
+      await login({ notify });
+      ready = true;
+      return true;
+    }
+  };
 }
 
 async function buildAgent(options, rl, stagedWorkspace, displayWorkspace, history = [], getActivity = () => null) {
@@ -120,7 +143,7 @@ async function buildAgent(options, rl, stagedWorkspace, displayWorkspace, histor
   }
 
   if (!process.env.GEMINI_API_KEY) {
-    throw new Error('Missing GEMINI_API_KEY for API-key mode. Set it or run `login` and use `auth google`.');
+    throw new Error('Missing GEMINI_API_KEY for API-key mode. Set it or switch to `auth google`; Google mode bootstraps automatically.');
   }
 
   const approveCommand = async (command, cwd) => {
@@ -174,6 +197,9 @@ async function runInteractive(options, workspace, settingsStore) {
   let activeIndicator = null;
   let activeController = null;
   const getActivity = () => activeIndicator;
+  const authBootstrap = createGoogleAuthBootstrap(options, {
+    notify: (message) => output.write(`${message}\n`)
+  });
   let agent = await buildAgent(options, rl, staging.workspace, workspace, conversation, getActivity);
 
   const rebuildAgent = async () => {
@@ -243,6 +269,7 @@ async function runInteractive(options, workspace, settingsStore) {
       if (line === 'login') {
         try {
           await loginWithGoogle({ notify: (message) => output.write(`${message}\n`) });
+          authBootstrap.markReady();
         } catch (error) {
           output.write(`\nError: ${error instanceof Error ? error.message : String(error)}\n\n`);
         }
@@ -331,6 +358,7 @@ async function runInteractive(options, workspace, settingsStore) {
             }
             const previous = options.auth;
             options.auth = auth;
+            authBootstrap.reset();
             try {
               await rebuildAgent();
               await settingsStore.update({ auth });
@@ -366,6 +394,12 @@ async function runInteractive(options, workspace, settingsStore) {
       }
 
       let answer;
+      try {
+        await authBootstrap.ensure();
+      } catch (error) {
+        output.write(`\nError: ${error instanceof Error ? error.message : String(error)}\n\n`);
+        continue;
+      }
       activeIndicator = createActivityIndicator(output);
       activeController = new AbortController();
       try {
@@ -379,6 +413,7 @@ async function runInteractive(options, workspace, settingsStore) {
         activeIndicator = null;
         activeController = null;
         await staging.discard();
+        if (error?.code === 'GOOGLE_AUTH_REQUIRED') authBootstrap.reset();
         await rebuildAgent();
         if (isCancellation(error)) output.write('\nCanceled.\n\n');
         else output.write(`\nError: ${error instanceof Error ? error.message : String(error)}\n\n`);
@@ -431,9 +466,6 @@ export async function main(argv = process.argv.slice(2)) {
   }
 
   if (parsedOptions.command === 'login') {
-    if (!input.isTTY || !output.isTTY) {
-      throw new Error('Google sign-in requires an interactive terminal with browser access.');
-    }
     await loginWithGoogle({ notify: (message) => output.write(`${message}\n`) });
     return;
   }
@@ -447,8 +479,13 @@ export async function main(argv = process.argv.slice(2)) {
   }
   options.yes = Boolean(options.yes);
 
+  const authBootstrap = createGoogleAuthBootstrap(options, {
+    notify: (message) => output.write(`${message}\n`)
+  });
+
   if (options.print !== null) {
     if (!options.print.trim()) throw new Error('Prompt cannot be empty.');
+    await authBootstrap.ensure();
     const staging = await createStagingWorkspace(workspace);
     const historyStore = await createHistoryStore(workspace);
     const conversation = await historyStore.load();

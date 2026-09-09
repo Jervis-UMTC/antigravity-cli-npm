@@ -5,30 +5,24 @@ import path from 'node:path';
 import test from 'node:test';
 import { discoverApiModels } from '../src/agent.js';
 import {
-  browserLaunchCommand,
   buildAntigravityArgs,
-  buildGoogleAuthUrl,
   buildReasoningDefaults,
-  discoverBundledGoogleModels,
   discoverGoogleModels,
   discoverOfficialAntigravityModels,
   discoverPublicGoogleModels,
   ensureOfficialAntigravityCli,
-  ensureGoogleCredentials,
-  geminiOAuthCredentialsPath,
   GoogleAccountAgent,
   googleAccountEnv,
   googleRuntimeStatus,
   installOfficialAntigravityCli,
-  loadGeminiOAuthMetadata,
   loginWithGoogle,
   officialAntigravityBinaryPath,
   probeOfficialAntigravityBinary,
   parseAntigravityJson,
   parseAntigravityModels,
-  parseGeminiJson,
   parsePublicGoogleModels,
   resolveAntigravityModel,
+  runOfficialAntigravityLogin,
   verifyOfficialAntigravitySubscription
 } from '../src/google-agent.js';
 
@@ -260,120 +254,89 @@ test('high reasoning config covers Gemini 3 and Gemini 2.5 auto fallbacks', () =
   assert.equal(config.ui.inlineThinkingMode, 'off');
 });
 
-test('provider bundle exposes OAuth metadata used by browser-only login', async () => {
-  const metadata = await loadGeminiOAuthMetadata();
-  assert.match(metadata.clientId, /\.apps\.googleusercontent\.com$/);
-  assert.ok(metadata.clientSecret.length > 0);
-  assert.ok(metadata.scopes.includes('https://www.googleapis.com/auth/cloud-platform'));
-  assert.match(metadata.successUrl, /gemini-code-assist\/auth_success_gemini/);
-});
-
-test('OAuth credentials use the same user-profile location as Gemini CLI', () => {
-  assert.equal(
-    geminiOAuthCredentialsPath({ env: {}, home: path.join('home', 'user') }),
-    path.join('home', 'user', '.gemini', 'oauth_creds.json')
-  );
-  assert.equal(
-    geminiOAuthCredentialsPath({ env: { GEMINI_CLI_HOME: path.join('custom', 'home') }, home: 'ignored' }),
-    path.join('custom', 'home', '.gemini', 'oauth_creds.json')
-  );
-});
-
-test('Windows browser launch is native and does not use a shell', () => {
-  const launch = browserLaunchCommand('https://example.test/a?b=1&c=2', 'win32');
-  assert.equal(launch.command, 'rundll32.exe');
-  assert.deepEqual(launch.args, ['url.dll,FileProtocolHandler', 'https://example.test/a?b=1&c=2']);
-});
-
-test('authorization URL requests offline access and explicit account consent', () => {
-  const url = new URL(buildGoogleAuthUrl({
-    clientId: 'client-id',
-    scopes: ['scope-one', 'scope-two'],
-    authorizationUrl: 'https://accounts.example.test/auth'
-  }, 'http://127.0.0.1:4321/oauth2callback', 'state-123'));
-
-  assert.equal(url.searchParams.get('client_id'), 'client-id');
-  assert.equal(url.searchParams.get('redirect_uri'), 'http://127.0.0.1:4321/oauth2callback');
-  assert.equal(url.searchParams.get('response_type'), 'code');
-  assert.equal(url.searchParams.get('access_type'), 'offline');
-  assert.equal(url.searchParams.get('scope'), 'scope-one scope-two');
-  assert.equal(url.searchParams.get('state'), 'state-123');
-  assert.equal(url.searchParams.get('prompt'), 'consent select_account');
-});
-
-test('login owns the browser callback and writes Gemini-compatible credentials without provider TUI', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-google-login-'));
-  const credentialsPath = path.join(root, '.gemini', 'oauth_creds.json');
-  const notices = [];
-  let tokenRequest = null;
-
-  const metadata = {
-    clientId: 'test-client',
-    clientSecret: 'test-secret',
-    scopes: ['scope-one', 'scope-two'],
-    authorizationUrl: 'https://accounts.example.test/auth',
-    tokenUrl: 'https://tokens.example.test/token',
-    successUrl: 'https://success.example.test/',
-    failureUrl: 'https://failure.example.test/'
+test('official login launches the Antigravity binary with no arguments in a hidden temporary PTY', async () => {
+  let probeCount = 0;
+  let spawnCall = null;
+  let killed = false;
+  const terminal = {
+    onData(callback) { this.dataCallback = callback; },
+    onExit(callback) { this.exitCallback = callback; },
+    kill() { killed = true; }
   };
 
-  try {
-    let officialProbeCount = 0;
-    let verified = 0;
-    await loginWithGoogle({
-      metadataLoader: async () => metadata,
-      credentialsPath,
-      callbackPort: 0,
-      timeoutMs: 2000,
-      notify: (message) => notices.push(message),
-      officialProbe: async () => {
-        officialProbeCount += 1;
-        return officialProbeCount > 1;
-      },
-      officialVerify: async () => { verified += 1; return true; },
-      fetchImpl: async (url, options) => {
-        tokenRequest = { url, options };
-        return {
-          ok: true,
-          status: 200,
-          async text() {
-            return JSON.stringify({
-              access_token: 'access-token',
-              refresh_token: 'refresh-token',
-              expires_in: 3600,
-              scope: 'scope-one scope-two',
-              token_type: 'Bearer'
-            });
-          }
-        };
-      },
-      openBrowser: async (authUrl) => {
-        const auth = new URL(authUrl);
-        const callback = new URL(auth.searchParams.get('redirect_uri'));
-        callback.searchParams.set('code', 'code-123');
-        callback.searchParams.set('state', auth.searchParams.get('state'));
-        const response = await fetch(callback, { redirect: 'manual' });
-        assert.equal(response.status, 302);
+  const result = await runOfficialAntigravityLogin({
+    ensureImpl: async () => 'C:\\provider\\agy.exe',
+    accountProbe: async () => {
+      probeCount += 1;
+      return probeCount >= 3;
+    },
+    ptyLoader: async () => ({
+      spawn(executable, args, options) {
+        spawnCall = { executable, args, options };
+        return terminal;
       }
-    });
+    }),
+    pollMs: 1,
+    timeoutMs: 250,
+    env: { PATH: 'test-path', GEMINI_API_KEY: 'must-not-leak' }
+  });
 
-    assert.deepEqual(notices, ['Complete sign-in in your browser.']);
-    assert.equal(verified, 1);
-    assert.equal(tokenRequest.url, metadata.tokenUrl);
-    assert.equal(tokenRequest.options.body.get('code'), 'code-123');
-    assert.equal(tokenRequest.options.body.get('client_id'), 'test-client');
-    assert.equal(tokenRequest.options.body.get('client_secret'), 'test-secret');
-    assert.match(tokenRequest.options.body.get('redirect_uri'), /^http:\/\/127\.0\.0\.1:\d+\/oauth2callback$/);
+  assert.equal(result, true);
+  assert.equal(spawnCall.executable, 'C:\\provider\\agy.exe');
+  assert.deepEqual(spawnCall.args, []);
+  assert.match(path.basename(spawnCall.options.cwd), /^agy-official-login-/);
+  assert.equal(spawnCall.options.env.GEMINI_API_KEY, undefined);
+  assert.equal(spawnCall.options.env.NO_COLOR, '1');
+  assert.equal(killed, true);
+});
 
-    const credentials = JSON.parse(await fs.readFile(credentialsPath, 'utf8'));
-    assert.equal(credentials.access_token, 'access-token');
-    assert.equal(credentials.refresh_token, 'refresh-token');
-    assert.equal(credentials.token_type, 'Bearer');
-    assert.equal('expires_in' in credentials, false);
-    assert.ok(credentials.expiry_date > Date.now());
-  } finally {
-    await fs.rm(root, { recursive: true, force: true });
-  }
+test('official login reports provider exit without exposing terminal escape sequences', async () => {
+  const terminal = {
+    onData(callback) { callback('\u001b[31mAuthentication failed\u001b[0m'); },
+    onExit(callback) { callback({ exitCode: 7 }); },
+    kill() {}
+  };
+
+  await assert.rejects(
+    () => runOfficialAntigravityLogin({
+      ensureImpl: async () => 'official-agy',
+      accountProbe: async () => false,
+      ptyLoader: async () => ({ spawn: () => terminal }),
+      pollMs: 1,
+      timeoutMs: 50
+    }),
+    (error) => {
+      assert.match(error.message, /exit 7/);
+      assert.match(error.message, /Authentication failed/);
+      assert.equal(error.message.includes('\u001b'), false);
+      return true;
+    }
+  );
+});
+
+test('agy login delegates first-run authentication to official Antigravity and verifies it', async () => {
+  const notices = [];
+  let connected = false;
+  let loginCalls = 0;
+  let verifyCalls = 0;
+
+  await loginWithGoogle({
+    notify: (message) => notices.push(message),
+    officialProbe: async () => connected,
+    officialLogin: async () => {
+      loginCalls += 1;
+      connected = true;
+      return true;
+    },
+    officialVerify: async () => {
+      verifyCalls += 1;
+      return true;
+    }
+  });
+
+  assert.deepEqual(notices, ['Complete sign-in in your browser.']);
+  assert.equal(loginCalls, 1);
+  assert.equal(verifyCalls, 1);
 });
 
 test('fresh subscription verification is headless, isolated, and checks the returned response', async () => {
@@ -390,120 +353,42 @@ test('fresh subscription verification is headless, isolated, and checks the retu
   assert.match(path.basename(call.options.cwd), /^agy-login-check-/);
 });
 
-test('login reuses a persistent official subscription session without browser or network', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-google-persistent-'));
-  const credentialsPath = path.join(root, '.gemini', 'oauth_creds.json');
-  await fs.mkdir(path.dirname(credentialsPath), { recursive: true });
-  await fs.writeFile(credentialsPath, JSON.stringify({
-    access_token: 'cached-access',
-    refresh_token: 'cached-refresh',
-    expiry_date: Date.now() + 60 * 60 * 1000,
-    token_type: 'Bearer'
-  }), 'utf8');
+test('login reuses an existing official Antigravity keyring session silently', async () => {
+  let loginCalls = 0;
+  let verifyCalls = 0;
+  const notices = [];
 
-  try {
-    let browserOpened = false;
-    let networkUsed = false;
-    await loginWithGoogle({
-      credentialsPath,
-      officialProbe: async () => true,
-      metadataLoader: async () => { throw new Error('metadata should not be loaded for a fresh cached login'); },
-      openBrowser: async () => { browserOpened = true; },
-      fetchImpl: async () => { networkUsed = true; throw new Error('network should not be used'); }
-    });
-    assert.equal(browserOpened, false);
-    assert.equal(networkUsed, false);
-  } finally {
-    await fs.rm(root, { recursive: true, force: true });
-  }
+  await loginWithGoogle({
+    notify: (message) => notices.push(message),
+    officialProbe: async () => true,
+    officialLogin: async () => { loginCalls += 1; },
+    officialVerify: async () => { verifyCalls += 1; }
+  });
+
+  assert.deepEqual(notices, []);
+  assert.equal(loginCalls, 0);
+  assert.equal(verifyCalls, 0);
 });
 
-test('expired persistent Google credential refreshes silently and preserves refresh token', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-google-refresh-'));
-  const credentialsPath = path.join(root, '.gemini', 'oauth_creds.json');
-  await fs.mkdir(path.dirname(credentialsPath), { recursive: true });
-  await fs.writeFile(credentialsPath, JSON.stringify({
-    access_token: 'expired-access',
-    refresh_token: 'persistent-refresh',
-    expiry_date: 1,
-    token_type: 'Bearer',
-    scope: 'scope-one'
-  }), 'utf8');
+test('official login times out and always terminates its hidden PTY', async () => {
+  let killed = false;
+  const terminal = {
+    onData(callback) { callback('Waiting for browser sign-in'); },
+    onExit() {},
+    kill() { killed = true; }
+  };
 
-  let request = null;
-  const now = 1_800_000_000_000;
-  try {
-    const credentials = await ensureGoogleCredentials({
-      credentialsPath,
-      now,
-      metadataLoader: async () => ({
-        clientId: 'test-client',
-        clientSecret: 'test-secret',
-        tokenUrl: 'https://tokens.example.test/token'
-      }),
-      fetchImpl: async (url, options) => {
-        request = { url, options };
-        return {
-          ok: true,
-          status: 200,
-          async text() {
-            return JSON.stringify({
-              access_token: 'refreshed-access',
-              expires_in: 3600,
-              token_type: 'Bearer'
-            });
-          }
-        };
-      }
-    });
-
-    assert.equal(request.url, 'https://tokens.example.test/token');
-    assert.equal(request.options.body.get('grant_type'), 'refresh_token');
-    assert.equal(request.options.body.get('refresh_token'), 'persistent-refresh');
-    assert.equal(credentials.access_token, 'refreshed-access');
-    assert.equal(credentials.refresh_token, 'persistent-refresh');
-    assert.equal(credentials.expiry_date, now + 3600 * 1000);
-    const stored = JSON.parse(await fs.readFile(credentialsPath, 'utf8'));
-    assert.equal(stored.access_token, 'refreshed-access');
-    assert.equal(stored.refresh_token, 'persistent-refresh');
-  } finally {
-    await fs.rm(root, { recursive: true, force: true });
-  }
-});
-
-test('login times out instead of appearing permanently stuck', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-google-timeout-'));
-  try {
-    await assert.rejects(
-      () => loginWithGoogle({
-        officialProbe: async () => false,
-        metadataLoader: async () => ({
-          clientId: 'test-client',
-          clientSecret: 'test-secret',
-          scopes: ['scope'],
-          authorizationUrl: 'https://accounts.example.test/auth',
-          tokenUrl: 'https://tokens.example.test/token'
-        }),
-        credentialsPath: path.join(root, 'oauth_creds.json'),
-        callbackPort: 0,
-        timeoutMs: 30,
-        openBrowser: async () => {},
-        fetchImpl: async () => { throw new Error('unexpected token request'); }
-      }),
-      /timed out/
-    );
-  } finally {
-    await fs.rm(root, { recursive: true, force: true });
-  }
-});
-
-test('bundled model discovery uses visible definitions from the installed Gemini CLI package', async () => {
-  const models = await discoverBundledGoogleModels();
-  assert.ok(models.length > 0);
-  assert.ok(models.some((model) => /^gemini-3/.test(model)));
-  assert.ok(models.includes('gemini-2.5-flash-lite'));
-  assert.equal(models.includes('gemini-3.1-pro-preview-customtools'), false);
-  assert.ok(models.every((model) => /^(?:gemini|gemma)-/.test(model)));
+  await assert.rejects(
+    () => runOfficialAntigravityLogin({
+      ensureImpl: async () => 'official-agy',
+      accountProbe: async () => false,
+      ptyLoader: async () => ({ spawn: () => terminal }),
+      pollMs: 1,
+      timeoutMs: 10
+    }),
+    /timed out.*Waiting for browser sign-in/
+  );
+  assert.equal(killed, true);
 });
 
 test('public model parser keeps general Pro/Flash IDs without matching specialized suffixes', () => {
@@ -516,7 +401,7 @@ test('public model parser keeps general Pro/Flash IDs without matching specializ
   assert.deepEqual(parsePublicGoogleModels(html), ['gemini-3.8-flash', 'gemini-4-pro-preview']);
 });
 
-test('public model discovery reads newly documented models independently of the provider bundle', async () => {
+test('public model discovery reads newly documented models independently of the installed provider', async () => {
   const models = await discoverPublicGoogleModels({
     platform: 'linux',
     curlLoader: null,
@@ -531,43 +416,23 @@ test('public model discovery reads newly documented models independently of the 
   assert.deepEqual(models, ['gemini-3.8-flash']);
 });
 
-test('Google model discovery merges public catalog models ahead of lagging provider models', async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-model-discovery-'));
-  const entryPath = path.join(root, 'gemini.js');
-  const catalogPath = path.join(root, 'catalog.js');
-  await fs.writeFile(entryPath, `import './catalog.js';\n`, 'utf8');
-  await fs.writeFile(catalogPath, `
-export const DEFAULT_MODEL_CONFIGS = {
-  modelDefinitions: {
-    'gemini-3.5-flash': { isVisible: true },
-    'gemini-hidden-internal': { isVisible: false },
-    'gemma-5-test': { isVisible: true },
-    auto: { isVisible: true }
-  }
-};
-`, 'utf8');
-
-  try {
-    const models = await discoverGoogleModels({
-      entryPath,
-      platform: 'linux',
-      officialModelsLoader: async () => [],
-      curlLoader: null,
-      fetchImpl: async () => ({
-        ok: true,
-        status: 200,
-        async text() {
-          return `
-            <a href="/gemini-api/docs/models/gemini-3.8-flash">3.8</a>
-            <a href="/gemini-api/docs/models/gemini-4-pro-preview">4 Pro</a>
-          `;
-        }
-      })
-    });
-    assert.deepEqual(models, ['gemini-3.8-flash', 'gemini-4-pro-preview', 'gemini-3.5-flash', 'gemma-5-test']);
-  } finally {
-    await fs.rm(root, { recursive: true, force: true });
-  }
+test('Google model discovery falls back to the public catalog when official discovery is unavailable', async () => {
+  const models = await discoverGoogleModels({
+    platform: 'linux',
+    officialModelsLoader: async () => [],
+    curlLoader: null,
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      async text() {
+        return `
+          <a href="/gemini-api/docs/models/gemini-3.8-flash">3.8</a>
+          <a href="/gemini-api/docs/models/gemini-4-pro-preview">4 Pro</a>
+        `;
+      }
+    })
+  });
+  assert.deepEqual(models, ['gemini-3.8-flash', 'gemini-4-pro-preview']);
 });
 
 test('Google model discovery prefers models exposed by the signed-in Antigravity subscription', async () => {
@@ -621,6 +486,33 @@ test('GoogleAccountAgent executes through official Antigravity headless mode and
   assert.deepEqual(calls[1].args.slice(calls[1].args.indexOf('--conversation'), calls[1].args.indexOf('--conversation') + 2), ['--conversation', 'conversation-123']);
 });
 
+test('GoogleAccountAgent marks provider authentication failures for automatic CLI re-bootstrap', async () => {
+  const agent = new GoogleAccountAgent({
+    workspace: path.join('C:\\tmp', 'stage'),
+    displayWorkspace: path.join('C:\\project'),
+    model: 'gemini-3.8-flash',
+    backend: {
+      ensure: async () => 'official-agy',
+      models: async () => ['gemini-3.8-flash'],
+      capture: async () => ({
+        code: 1,
+        stdout: '',
+        stderr: 'Authentication required. Please sign in.'
+      })
+    }
+  });
+
+  await assert.rejects(
+    () => agent.prompt('test request'),
+    (error) => {
+      assert.equal(error.code, 'GOOGLE_AUTH_REQUIRED');
+      assert.match(error.message, /reopen automatically/i);
+      assert.doesNotMatch(error.message, /agy login/i);
+      return true;
+    }
+  );
+});
+
 test('API-key model discovery uses the provider list endpoint and generateContent capability', async () => {
   let requested = null;
   const models = await discoverApiModels({
@@ -645,15 +537,4 @@ test('API-key model discovery uses the provider list endpoint and generateConten
 
   assert.equal(requested, 'https://example.test/v1beta/models?key=test-key');
   assert.deepEqual(models, ['gemini-3.8-flash', 'gemini-4-pro-preview']);
-});
-
-test('parseGeminiJson returns the official CLI response field', () => {
-  assert.equal(parseGeminiJson('{"response":"done","stats":{}}'), 'done');
-});
-
-test('parseGeminiJson surfaces structured errors', () => {
-  assert.throws(
-    () => parseGeminiJson('{"error":{"message":"not signed in"}}'),
-    /not signed in/
-  );
 });
