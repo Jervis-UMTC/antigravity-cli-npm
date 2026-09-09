@@ -6,7 +6,53 @@ The npm package and public command are both `antigyc`. The GitHub repository rem
 
 > Use `antigyc`, not `agy`. `agy` may belong to Google's own Antigravity CLI or another installed program.
 
-## Start here if you are new
+## Quick start (most important commands)
+
+Install:
+
+```text
+npm install -g antigyc
+```
+
+Start working in your project:
+
+```text
+cd your-project-folder
+antigyc
+```
+
+Inside the antigyc shell:
+
+```text
+inspect the project
+fix the bugs in this project
+add a feature and run the tests
+explain this codebase
+```
+
+Useful commands:
+
+```text
+status     show current model/auth/backend state
+doctor     check installation problems
+help       show available commands
+exit       close antigyc
+```
+
+One-shot usage:
+
+```text
+antigyc -m "inspect this project and fix important issues"
+```
+
+Attachments:
+
+```text
+attach C:\path\to\file.pdf
+implement the requirements from the attachment
+```
+
+## Foolproof tutorial for beginners
 
 If you only want to use `antigyc`, follow these steps exactly. You do not need to understand npm, API keys, providers, models, staging, or the rest of this README first.
 
