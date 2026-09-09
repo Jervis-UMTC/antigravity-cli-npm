@@ -60,7 +60,7 @@ export function persistWindowsUserPath(target, {
   spawnImpl = spawnSync
 } = {}) {
   const script = [
-    '$target=$env:AGY_NPM_BIN',
+    '$target=$env:AGYC_NPM_BIN',
     "$current=[Environment]::GetEnvironmentVariable('Path','User')",
     "if($null -eq $current){$current=''}",
     "$parts=@($current -split ';' | ForEach-Object {$_.Trim()} | Where-Object {$_})",
@@ -74,11 +74,10 @@ export function persistWindowsUserPath(target, {
   ].join(';');
 
   const result = spawnImpl('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
-    env: { ...env, AGY_NPM_BIN: target },
+    env: { ...env, AGYC_NPM_BIN: target },
     encoding: 'utf8',
     windowsHide: true
   });
-
   if (result.error || result.status !== 0) {
     return {
       ok: false,
@@ -111,9 +110,9 @@ export function configureWindowsPath({
 export function main() {
   const result = configureWindowsPath();
   if (result.ok && result.changed) {
-    process.stdout.write(`agy: added ${result.target} to your user PATH. Open a new terminal once.\n`);
+    process.stdout.write(`agyc: added ${result.target} to your user PATH. Open a new terminal once.\n`);
   } else if (!result.ok) {
-    process.stderr.write(`agy: could not update your user PATH automatically: ${result.error?.message || 'unknown error'}\n`);
+    process.stderr.write(`agyc: could not update your user PATH automatically: ${result.error?.message || 'unknown error'}\n`);
   }
 }
 

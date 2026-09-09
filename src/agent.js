@@ -206,7 +206,7 @@ function historyToContents(messages) {
 export class CodingAgent {
   constructor({ workspace, displayWorkspace, tools, apiKey, model, baseUrl, reasoning = 'auto', history = [], fetchImpl = globalThis.fetch }) {
     if (!apiKey) {
-      throw new Error('Missing GEMINI_API_KEY. Set it in your environment before starting agy.');
+      throw new Error('Missing GEMINI_API_KEY. Set it in your environment before starting agyc.');
     }
 
     this.workspace = workspace;
@@ -242,6 +242,7 @@ export class CodingAgent {
     this.history.push({ role: 'user', parts });
 
     try {
+      let emptyFinalRecoveryUsed = false;
       for (let step = 0; step < MAX_STEPS; step += 1) {
         throwIfAborted(signal);
         const content = await this.#generate(signal);
@@ -251,7 +252,16 @@ export class CodingAgent {
 
         if (calls.length === 0) {
           const answer = getText(parts);
-          return answer || '(no response)';
+          if (answer) return answer;
+          if (!emptyFinalRecoveryUsed) {
+            emptyFinalRecoveryUsed = true;
+            this.history.push({
+              role: 'user',
+              parts: [{ text: 'Return a concise non-empty final user-facing response for the immediately previous request.' }]
+            });
+            continue;
+          }
+          throw new Error('Gemini completed the request but returned no final response text.');
         }
 
         const responses = [];

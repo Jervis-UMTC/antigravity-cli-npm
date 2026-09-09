@@ -2,7 +2,7 @@
 
 A coding agent that looks and behaves like a normal command prompt.
 
-`agy` intentionally has no AI-style terminal interface: no startup banner, cards, panels, spinner, tool-call stream, model badge, reasoning display, assistant label, or live edit animation. Normal interactive startup is simply:
+`agyc` intentionally has no AI-style terminal interface: no startup banner, cards, panels, spinner, tool-call stream, model badge, reasoning display, assistant label, or live edit animation. Normal interactive startup is simply:
 
 ```text
 C:\projects\my-app>
@@ -32,7 +32,7 @@ The agent works behind that prompt. It performs project edits in a private OS-te
   - a Google/Gemini subscription account through Google's official Antigravity CLI backend, or
   - a Gemini API key in `GEMINI_API_KEY`.
 
-For Google subscription mode, `agy` uses the official Antigravity CLI only as a hidden headless backend. If that backend is missing, `agy` can install it into its normal per-user location without adding the provider binary to PATH or replacing this npm package's `agy` command.
+For Google subscription mode, `agyc` uses the official Antigravity CLI only as a hidden headless backend. If that backend is missing, `agyc` installs it into a private per-user data location without adding the provider binary to PATH or claiming Google's existing `agy` command.
 
 ## Try it now from this repository
 
@@ -47,41 +47,41 @@ npm test
 npm link
 ```
 
-On Windows, `npm install` / `npm link` now performs the PATH setup automatically. The package detects npm's command directory and adds it to the **Windows user PATH only when missing**, preserving every existing PATH entry. The operation is idempotent and is skipped on non-Windows systems.
+On Windows, `npm install` / `npm link` performs the PATH setup automatically. The package detects npm's command directory and adds it to the **Windows user PATH only when missing**, preserving every existing PATH entry. Because this package uses the distinct `agyc` command, it does not need to reorder PATH entries to compete with Google's `agy`. The operation is idempotent and is skipped on non-Windows systems.
 
 A child npm process cannot modify the environment of an already-open parent CMD window. Therefore, after the **first** install/link on a machine, close that terminal and open one new terminal. After that, there is no repeated `set PATH=...` setup.
 
 Verify once in the new terminal:
 
 ```cmd
-where agy
-agy --version
+where agyc
+agyc --version
 ```
 
 During that one initial terminal session, you can still invoke the generated shim directly without changing PATH:
 
 ```cmd
-%APPDATA%\npm\agy.cmd --version
+%APPDATA%\npm\agyc.cmd --version
 ```
 
-No separate Google authentication command is required. Move to **any folder** you want the agent to work on and start `agy`:
+No separate Google authentication command is required. Move to **any folder** you want the agent to work on and start `agyc`:
 
 ```cmd
 cd C:\projects\my-app
-agy
+agyc
 ```
 
 The target can be a Git repository:
 
 ```text
-C:\projects\repo-with-git> agy
+C:\projects\repo-with-git> agyc
 C:\projects\repo-with-git>
 ```
 
 or a completely ordinary folder with no `.git` directory:
 
 ```text
-C:\projects\plain-folder> agy
+C:\projects\plain-folder> agyc
 C:\projects\plain-folder>
 ```
 
@@ -102,16 +102,18 @@ mkdir C:\temp\agy-test
 cd C:\temp\agy-test
 npm init -y
 npm install C:\path\to\antigravity-cli-npm\antigravity-cli-npm-0.1.0.tgz
-npx agy --help
-npx agy
+npx agyc --help
+npx agyc
 ```
 
-The package exposes both command names:
+The package exposes the conflict-free short command and a package-name alias:
 
 ```cmd
-agy
-antigravity
+agyc
+antigravity-cli-npm
 ```
+
+This package deliberately does **not** export `agy` or `antigravity`. Google's official backend may already use `agy`, so both products can coexist on the same machine without PATH-order tricks.
 
 ## Install after npm publication
 
@@ -121,35 +123,35 @@ Global installation:
 npm install -g antigravity-cli-npm
 ```
 
-On Windows, installation automatically persists npm's command directory into the user PATH if it is missing. On the first install only, open one new terminal afterward; future terminals can run `agy` directly with no setup.
+On Windows, installation automatically adds npm's command directory to the user PATH if it is missing. On the first install, open one new terminal afterward; future terminals can run `agyc` directly with no extra setup.
 
 Then:
 
 ```cmd
 cd C:\projects\my-app
-agy
+agyc
 ```
 
 Project-local installation:
 
 ```cmd
 npm install --save-dev antigravity-cli-npm
-npx agy
+npx agyc
 ```
 
 ## Zero-setup Google account bootstrap
 
-You do **not** need to run `agy login` before using the CLI. Start `agy` normally and enter your first request. In Google mode, that request automatically ensures the official backend is installed and healthy, checks the native Antigravity secure session, and starts the official browser sign-in flow only when that device actually needs authentication.
+You do **not** need to run `agyc login` before using the CLI. Start `agyc` normally and enter your first request. In Google mode, that request automatically ensures the official backend is installed and healthy, checks the native Antigravity secure session, and starts the official browser sign-in flow only when that device actually needs authentication.
 
 Google subscription mode now executes through Google's **official Antigravity CLI headless client**, rather than the older Gemini CLI / Code Assist client that rejects personal accounts. The provider binary is invoked by its absolute per-user path, with JSON output captured internally, so its TUI, progress stream, slash commands, banners, and tool narration do not appear inside this wrapper.
 
-On Windows the official backend normally lives at `%LOCALAPPDATA%\agy\bin\agy.exe`; on macOS/Linux it normally lives at `~/.local/bin/agy`. `agy` can install that backend automatically with the provider's official installer using `--skip-path --skip-aliases`, which prevents the provider binary from taking over the npm wrapper's command name. The binary is health-checked before first use in each wrapper process; an unhealthy default backend is replaced through the official installer, while an explicit `ANTIGRAVITY_CLI_BINARY` override is never silently deleted. The provider remains responsible for its own normal self-update behavior.
+The package-managed official backend is deliberately kept out of normal command directories: `%LOCALAPPDATA%\antigravity-cli-npm\provider\agy.exe` on Windows, `~/Library/Application Support/antigravity-cli-npm/provider/agy` on macOS, and `${XDG_DATA_HOME:-~/.local/share}/antigravity-cli-npm/provider/agy` on Linux. `agyc` installs it with the provider's official installer using `--skip-path --skip-aliases` and invokes it only by absolute path, so the provider binary cannot take over this package's command name. The binary is health-checked before first use in each wrapper process; an unhealthy managed backend is replaced through the official installer, while an explicit `ANTIGRAVITY_CLI_BINARY` override is never silently deleted. The provider remains responsible for its own normal self-update behavior.
 
-Authentication is persistent through the official Antigravity secure account session, including Windows Credential Manager on Windows. Normal `agy` requests probe that native session automatically and continue silently when it is already usable. On a first use on a new device/user profile, the wrapper starts the official Antigravity binary with no arguments inside a hidden pseudo-terminal rooted in an empty OS-temporary directory. The official client itself opens its Antigravity browser sign-in flow and writes its native secure-keyring session; all provider terminal rendering remains captured and invisible. As soon as the official session becomes usable, the hidden bootstrap process is stopped and `agy` performs one headless verification request before continuing the original request. There is no Gemini CLI/Code Assist OAuth fallback, no `oauth_creds.json`, and no credential-migration step.
+Authentication is persistent through the official Antigravity secure account session, including Windows Credential Manager on Windows. Normal `agyc` requests probe that native session automatically and continue silently when it is already usable. On a first use on a new device/user profile, the wrapper starts the official Antigravity binary with no arguments inside a hidden pseudo-terminal rooted in an empty OS-temporary directory. The official client itself opens its Antigravity browser sign-in flow and writes its native secure-keyring session; all provider terminal rendering remains captured and invisible. As soon as the official session becomes usable, the hidden bootstrap process is stopped and `agyc` performs one headless verification request before continuing the original request. There is no Gemini CLI/Code Assist OAuth fallback, no `oauth_creds.json`, and no credential-migration step.
 
 Antigravity **IDE** is not required. The official Antigravity **CLI backend** is the supported Google subscription transport and is intentionally hidden behind this package's CMD-style interface.
 
-Use the Google account associated with the subscription you want Antigravity to use. A brand-new device may still require you to approve Google's browser sign-in once because the provider's secure session is device-local; that is identity consent, not CLI setup. Afterward, normal restarts and projects reuse the session automatically. `agy login` remains available only as an explicit verification/renewal command. The wrapper never falls back to Gemini CLI or Code Assist authentication.
+Use the Google account associated with the subscription you want Antigravity to use. A brand-new device may still require you to approve Google's browser sign-in once because the provider's secure session is device-local; that is identity consent, not CLI setup. Afterward, normal restarts and projects reuse the session automatically. `agyc login` remains available only as an explicit verification/renewal command. The wrapper never falls back to Gemini CLI or Code Assist authentication.
 
 Some organization or Workspace environments may additionally require a Google Cloud project:
 
@@ -157,7 +159,7 @@ Some organization or Workspace environments may additionally require a Google Cl
 set GOOGLE_CLOUD_PROJECT=your-project-id
 ```
 
-After any required first-device browser consent completes, the original request continues and later use stays on the plain `agy` prompt.
+After any required first-device browser consent completes, the original request continues and later use stays on the plain `agyc` prompt.
 
 ## API-key authentication
 
@@ -165,21 +167,21 @@ Windows CMD:
 
 ```cmd
 set GEMINI_API_KEY=your_api_key_here
-agy --auth api-key
+agyc --auth api-key
 ```
 
 PowerShell:
 
 ```powershell
 $env:GEMINI_API_KEY="your_api_key_here"
-agy --auth api-key
+agyc --auth api-key
 ```
 
 macOS/Linux:
 
 ```bash
 export GEMINI_API_KEY="your_api_key_here"
-agy --auth api-key
+agyc --auth api-key
 ```
 
 Authentication modes:
@@ -195,8 +197,8 @@ auth api-key
 From the process command line:
 
 ```cmd
-agy --auth google
-agy --auth api-key
+agyc --auth google
+agyc --auth api-key
 ```
 
 Environment default:
@@ -211,7 +213,7 @@ Start in the project you want to modify:
 
 ```cmd
 cd C:\projects\my-app
-agy
+agyc
 ```
 
 Then type normal instructions:
@@ -235,13 +237,13 @@ There is no visible tool stream while the task is running. For requests that tak
 Run one instruction and exit:
 
 ```cmd
-agy -p "find the bug and fix it"
+agyc -p "find the bug and fix it"
 ```
 
 With options:
 
 ```cmd
-agy --model pro --reasoning high --yes -p "implement the feature and run the tests"
+agyc --model pro --reasoning high --yes -p "implement the feature and run the tests"
 ```
 
 The same hidden transaction is used in one-shot mode.
@@ -306,9 +308,9 @@ flash-lite
 <models from Google's public catalog and the installed provider catalog>
 ```
 
-`model list` is discovery-backed rather than a hard-coded release list. In Google subscription mode, `agy` first runs the official Antigravity backend's `models` command with all provider progress captured. That makes the list reflect models actually offered to the signed-in subscription. Effort-specific provider slugs such as `gemini-3.8-flash-high` are normalized to the base model `gemini-3.8-flash`, because this wrapper keeps reasoning effort as a separate `reasoning` setting.
+`model list` is discovery-backed rather than a hard-coded release list. In Google subscription mode, `agyc` first runs the official Antigravity backend's `models` command with all provider progress captured. That makes the list reflect models actually offered to the signed-in subscription. Effort-specific provider slugs such as `gemini-3.8-flash-high` are normalized to the base model `gemini-3.8-flash`, because this wrapper keeps reasoning effort as a separate `reasoning` setting.
 
-If official subscription discovery is unavailable, `agy` falls back to Google's public Gemini model documentation. In API-key mode, it uses the live Gemini `/models` endpoint and keeps models that support `generateContent`. The short names `auto`, `pro`, `flash`, and `flash-lite` remain convenience choices and resolve dynamically to the newest matching model available through the active provider; an unavailable alias fails clearly instead of silently selecting another model.
+If official subscription discovery is unavailable, `agyc` falls back to Google's public Gemini model documentation. In API-key mode, it uses the live Gemini `/models` endpoint and keeps models that support `generateContent`. The short names `auto`, `pro`, `flash`, and `flash-lite` remain convenience choices and resolve dynamically to the newest matching model available through the active provider; an unavailable alias fails clearly instead of silently selecting another model.
 
 Change the model silently:
 
@@ -326,7 +328,7 @@ C:\project> model gemini-3.1-pro-preview
 Process option:
 
 ```cmd
-agy --model pro
+agyc --model pro
 ```
 
 Environment default:
@@ -362,7 +364,7 @@ C:\project> reasoning high
 C:\project>
 ```
 
-Interactive changes to `model`, `reasoning`, `auth`, and `approval` are persisted globally under the external state root and reused in later `agy` processes. Command-line flags and environment variables can still override those saved defaults for a specific launch.
+Interactive changes to `model`, `reasoning`, `auth`, and `approval` are persisted globally under the external state root and reused in later `agyc` processes. Command-line flags and environment variables can still override those saved defaults for a specific launch.
 
 Meaning:
 
@@ -375,7 +377,7 @@ Thoughts and chain-of-thought are never printed in normal terminal output or sto
 Process option:
 
 ```cmd
-agy --reasoning high
+agyc --reasoning high
 ```
 
 Environment default:
@@ -416,10 +418,10 @@ C:\project> approval yes
 or at startup:
 
 ```cmd
-agy --yes
+agyc --yes
 ```
 
-In direct API-key mode, `ask` requires confirmation before shell commands. In Google-account mode, normal hidden execution uses the official provider's edit-friendly approval path; `yes` maps to its fully automatic tool path inside the private staging workspace.
+In direct API-key mode, `ask` requires confirmation before shell commands. In Google-account mode, the provider's print/headless path cannot surface interactive permission prompts. Normal `ask` therefore auto-permits provider tools **inside Antigravity's terminal sandbox and the wrapper's private staging copy**; `yes` removes the provider sandbox while retaining the wrapper's staging transaction.
 
 `--yes` should still be used deliberately: staging prevents partial project-source publication, but a shell command can have effects outside the project if the command itself targets external resources.
 
@@ -483,13 +485,13 @@ Images and PDFs are supplied as multimodal content where the provider supports i
 `--attach` is repeatable:
 
 ```cmd
-agy --attach screenshot.png --attach requirements.pdf -p "fix the UI according to these files"
+agyc --attach screenshot.png --attach requirements.pdf -p "fix the UI according to these files"
 ```
 
 Paths containing spaces can be quoted:
 
 ```cmd
-agy --attach "C:\docs\feature spec.pdf" -p "implement this"
+agyc --attach "C:\docs\feature spec.pdf" -p "implement this"
 ```
 
 Interactive equivalent:
@@ -500,7 +502,7 @@ C:\project> attach "C:\docs\feature spec.pdf"
 
 ## Conversation history
 
-Conversation history persists across `agy` restarts for each project directory.
+Conversation history persists across `agyc` restarts for each project directory.
 
 It is stored **outside** the repository. Default state root:
 
@@ -545,11 +547,11 @@ History stores user messages, final replies, timestamps, and attachment metadata
 
 ### Relocate external state
 
-Set `ANTIGRAVITY_HOME` before starting `agy`:
+Set `ANTIGRAVITY_HOME` before starting `agyc`:
 
 ```cmd
 set ANTIGRAVITY_HOME=D:\private\agy-state
-agy
+agyc
 ```
 
 No history database is placed inside the project unless you explicitly point `ANTIGRAVITY_HOME` there yourself.
@@ -611,10 +613,10 @@ This works:
 ```cmd
 mkdir C:\projects\scratch-app
 cd C:\projects\scratch-app
-agy
+agyc
 ```
 
-No `git init` is performed and no `.git` directory is created by `agy`.
+No `git init` is performed and no `.git` directory is created by `agyc`.
 
 ### Existing Git repository
 
@@ -661,18 +663,18 @@ The direct API-key implementation constrains its built-in file tools to the curr
 ## CLI options
 
 ```text
-agy
-agy login
-agy init
-agy -p <prompt>
-agy --attach <path>
-agy --yes
-agy --auth auto|google|api-key
-agy --model <name>
-agy --reasoning auto|low|high
-agy --base-url <url>
-agy --help
-agy --version
+agyc
+agyc login
+agyc init
+agyc -p <prompt>
+agyc --attach <path>
+agyc --yes
+agyc --auth auto|google|api-key
+agyc --model <name>
+agyc --reasoning auto|low|high
+agyc --base-url <url>
+agyc --help
+agyc --version
 ```
 
 Short forms:
@@ -726,7 +728,7 @@ C:\project> implement the required endpoint changes and tests
 
 ```cmd
 cd C:\projects\my-app
-agy
+agyc
 ```
 
 The project-scoped external conversation history is loaded automatically.
@@ -740,13 +742,13 @@ C:\project> clear
 ### Use stronger reasoning for one session
 
 ```cmd
-agy --reasoning high --model pro
+agyc --reasoning high --model pro
 ```
 
 ### Run autonomously in a trusted local project
 
 ```cmd
-agy --yes -p "apply the refactor and run all tests"
+agyc --yes -p "apply the refactor and run all tests"
 ```
 
 ## Failure behavior
@@ -873,20 +875,20 @@ Either:
 
 ```cmd
 set GEMINI_API_KEY=your_key
-agy --auth api-key
+agyc --auth api-key
 ```
 
 or switch back to Google mode:
 
 ```cmd
-agy --auth google
+agyc --auth google
 ```
 
 Google mode does not require a separate login command. Your first normal request automatically installs/repairs the official Antigravity backend if necessary and opens the official browser sign-in only when the native secure session is missing. Once approved on that device, later requests and restarts reuse the secure session silently. The wrapper does not create or read Gemini CLI `oauth_creds.json` credentials.
 
 ### Google browser sign-in appears on a new device
 
-This is expected once per device/user profile when the official Antigravity keyring has no usable session. Finish the provider's browser consent and the original `agy` request continues automatically. No additional CLI command is required.
+This is expected once per device/user profile when the official Antigravity keyring has no usable session. Finish the provider's browser consent and the original `agyc` request continues automatically. No additional CLI command is required.
 
 ### The target folder has no `.git`
 

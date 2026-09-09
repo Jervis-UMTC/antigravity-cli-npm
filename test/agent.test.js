@@ -42,3 +42,29 @@ test('direct API request propagates AbortSignal and rejects cancellation', async
   controller.abort();
   await assert.rejects(request, (error) => error?.name === 'AbortError');
 });
+
+test('direct API recovers an empty final response instead of printing a placeholder', async () => {
+  let calls = 0;
+  const agent = new CodingAgent({
+    workspace: process.cwd(),
+    displayWorkspace: process.cwd(),
+    apiKey: 'test-key',
+    model: 'gemini-3.8-flash',
+    reasoning: 'auto',
+    tools: { execute: async () => '' },
+    fetchImpl: async () => {
+      calls += 1;
+      return {
+        ok: true,
+        async json() {
+          return {
+            candidates: [{ content: { role: 'model', parts: calls === 1 ? [] : [{ text: 'Project checked.' }] } }]
+          };
+        }
+      };
+    }
+  });
+
+  assert.equal(await agent.prompt('check the project'), 'Project checked.');
+  assert.equal(calls, 2);
+});

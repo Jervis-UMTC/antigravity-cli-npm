@@ -53,11 +53,19 @@ test('official Antigravity backend path is isolated from the npm agy shim', () =
       env: { LOCALAPPDATA: 'C:\\Users\\me\\AppData\\Local' },
       home: 'ignored'
     }),
-    'C:\\Users\\me\\AppData\\Local\\agy\\bin\\agy.exe'
+    'C:\\Users\\me\\AppData\\Local\\antigravity-cli-npm\\provider\\agy.exe'
   );
   assert.equal(
     officialAntigravityBinaryPath({ platform: 'linux', env: {}, home: '/home/me' }),
-    path.join('/home/me', '.local', 'bin', 'agy')
+    path.join('/home/me', '.local', 'share', 'antigravity-cli-npm', 'provider', 'agy')
+  );
+  assert.equal(
+    officialAntigravityBinaryPath({ platform: 'linux', env: { XDG_DATA_HOME: '/data/me' }, home: '/home/me' }),
+    path.join('/data/me', 'antigravity-cli-npm', 'provider', 'agy')
+  );
+  assert.equal(
+    officialAntigravityBinaryPath({ platform: 'darwin', env: {}, home: '/Users/me' }),
+    path.join('/Users/me', 'Library', 'Application Support', 'antigravity-cli-npm', 'provider', 'agy')
   );
   assert.equal(
     officialAntigravityBinaryPath({ platform: 'win32', env: { ANTIGRAVITY_CLI_BINARY: 'D:\\provider\\agy.exe' } }),
@@ -219,8 +227,15 @@ test('Antigravity request args preserve model, reasoning, permissions, attachmen
   assert.deepEqual(args.slice(args.indexOf('--model'), args.indexOf('--model') + 2), ['--model', 'gemini-3.8-flash']);
   assert.deepEqual(args.slice(args.indexOf('--effort'), args.indexOf('--effort') + 2), ['--effort', 'high']);
   assert.ok(args.includes('--dangerously-skip-permissions'));
+  assert.equal(args.includes('--sandbox'), false);
   assert.deepEqual(args.slice(args.indexOf('--conversation'), args.indexOf('--conversation') + 2), ['--conversation', 'conversation-1']);
   assert.equal(args.filter((item) => item === '--add-dir').length, 1);
+});
+
+test('normal Google mode permits project tools inside the provider sandbox', () => {
+  const args = buildAntigravityArgs({ prompt: 'check the project', yes: false });
+  assert.ok(args.includes('--dangerously-skip-permissions'));
+  assert.ok(args.includes('--sandbox'));
 });
 
 test('Antigravity aliases resolve against models actually available to the subscription', async () => {
@@ -240,6 +255,10 @@ test('Antigravity JSON parser returns response and conversation ID', () => {
   assert.throws(
     () => parseAntigravityJson('{"status":"ERROR","response":"","error":"authentication required"}'),
     /authentication required/
+  );
+  assert.deepEqual(
+    parseAntigravityJson('{"conversation_id":"empty","status":"SUCCESS","response":""}'),
+    { response: '', conversationId: 'empty' }
   );
 });
 
@@ -484,6 +503,57 @@ test('GoogleAccountAgent executes through official Antigravity headless mode and
   assert.ok(calls[0].args.includes('--dangerously-skip-permissions'));
   assert.equal(calls[0].options.env.GOOGLE_GENAI_USE_GCA, undefined);
   assert.deepEqual(calls[1].args.slice(calls[1].args.indexOf('--conversation'), calls[1].args.indexOf('--conversation') + 2), ['--conversation', 'conversation-123']);
+});
+
+test('GoogleAccountAgent recovers an empty successful provider response and returns the recovery text', async () => {
+  const calls = [];
+  const agent = new GoogleAccountAgent({
+    workspace: path.join('C:\\tmp', 'stage'),
+    displayWorkspace: path.join('C:\\project'),
+    model: 'gemini-3.8-flash',
+    backend: {
+      ensure: async () => 'official-agy',
+      models: async () => ['gemini-3.8-flash'],
+      capture: async (_binary, args) => {
+        calls.push(args);
+        if (calls.length === 1) {
+          return {
+            code: 0,
+            stdout: JSON.stringify({ conversation_id: 'conversation-empty', status: 'SUCCESS', response: '' }),
+            stderr: ''
+          };
+        }
+        return {
+          code: 0,
+          stdout: JSON.stringify({ conversation_id: 'conversation-empty', status: 'SUCCESS', response: 'Project checked. No issues found.' }),
+          stderr: ''
+        };
+      }
+    }
+  });
+
+  assert.equal(await agent.prompt('check the project'), 'Project checked. No issues found.');
+  assert.equal(calls.length, 2);
+  assert.deepEqual(
+    calls[1].slice(calls[1].indexOf('--conversation'), calls[1].indexOf('--conversation') + 2),
+    ['--conversation', 'conversation-empty']
+  );
+  assert.match(calls[1][calls[1].indexOf('-p') + 1], /non-empty final user-facing response/);
+});
+
+test('GoogleAccountAgent rejects a truly empty response instead of printing a placeholder', async () => {
+  const agent = new GoogleAccountAgent({
+    workspace: path.join('C:\\tmp', 'stage'),
+    displayWorkspace: path.join('C:\\project'),
+    model: 'gemini-3.8-flash',
+    backend: {
+      ensure: async () => 'official-agy',
+      models: async () => ['gemini-3.8-flash'],
+      capture: async () => ({ code: 0, stdout: '{"status":"SUCCESS","response":""}', stderr: '' })
+    }
+  });
+
+  await assert.rejects(() => agent.prompt('check the project'), /returned no final response text/);
 });
 
 test('GoogleAccountAgent marks provider authentication failures for automatic CLI re-bootstrap', async () => {

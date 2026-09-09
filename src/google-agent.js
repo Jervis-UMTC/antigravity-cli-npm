@@ -31,9 +31,13 @@ export function officialAntigravityBinaryPath({
   if (override) return path.resolve(override);
   if (platform === 'win32') {
     const localAppData = String(env.LOCALAPPDATA || '').trim() || path.join(home, 'AppData', 'Local');
-    return path.join(localAppData, 'agy', 'bin', 'agy.exe');
+    return path.join(localAppData, 'antigravity-cli-npm', 'provider', 'agy.exe');
   }
-  return path.join(home, '.local', 'bin', 'agy');
+  if (platform === 'darwin') {
+    return path.join(home, 'Library', 'Application Support', 'antigravity-cli-npm', 'provider', 'agy');
+  }
+  const dataHome = String(env.XDG_DATA_HOME || '').trim() || path.join(home, '.local', 'share');
+  return path.join(dataHome, 'antigravity-cli-npm', 'provider', 'agy');
 }
 
 async function fileExists(file) {
@@ -526,7 +530,7 @@ export function parseAntigravityJson(text) {
   if (body.error) throw new Error(typeof body.error === 'string' ? body.error : JSON.stringify(body.error));
   if (typeof body.response !== 'string') throw new Error('Google Antigravity response did not contain response text.');
   return {
-    response: body.response.trim() || '(no response)',
+    response: body.response.trim(),
     conversationId: typeof body.conversation_id === 'string' && body.conversation_id ? body.conversation_id : null
   };
 }
@@ -567,7 +571,12 @@ export function buildAntigravityArgs({
   ];
   if (model) args.push('--model', model);
   if (reasoning !== 'auto') args.push('--effort', normalizeReasoning(reasoning));
-  if (yes) args.push('--dangerously-skip-permissions');
+  // Print mode cannot surface the provider's interactive permission UI. The
+  // wrapper already operates on a disposable project copy, so normal mode
+  // auto-approves provider tools inside Antigravity's terminal sandbox. The
+  // explicit `yes` mode keeps auto-approval and removes that sandbox limit.
+  args.push('--dangerously-skip-permissions');
+  if (!yes) args.push('--sandbox');
   if (conversationId) args.push('--conversation', conversationId);
   const directories = [...new Set(attachments.map((attachment) => path.dirname(attachment.stagedPath)).filter(Boolean))];
   for (const directory of directories) args.push('--add-dir', directory);
@@ -697,7 +706,7 @@ export class GoogleAccountAgent {
     const attachmentInstruction = attachments.length
       ? `\n\nAttachments for this request:\n${attachments.map((attachment) => `- ${attachment.name}: ${attachment.stagedPath}`).join('\n')}\nRead every listed attachment with the read_file tool before answering. Images and PDFs are multimodal inputs. Do not copy attachment files into the project.`
       : '';
-    const hiddenInstruction = `Operate on this staged copy as the project at ${this.displayWorkspace}. Do not mention staging paths, conversation storage, or internal tool activity. Complete the user's coding request, validate it, and return only the concise final result.${previousConversation}${attachmentInstruction}\n\nUser request:\n${text}`;
+    const hiddenInstruction = `Operate on this staged copy as the project at ${this.displayWorkspace}. Do not mention staging paths, conversation storage, or internal tool activity. Complete the user's coding request, validate it, and always return a non-empty concise final user-facing response, including for inspection-only requests or when no files change.${previousConversation}${attachmentInstruction}\n\nUser request:\n${text}`;
     const args = buildAntigravityArgs({
       prompt: hiddenInstruction,
       model: effectiveModel,
@@ -727,8 +736,31 @@ export class GoogleAccountAgent {
       throw new Error(`Google subscription request failed${detail ? `: ${detail}` : '.'}`);
     }
 
-    const parsed = parseAntigravityJson(result.stdout);
+    let parsed = parseAntigravityJson(result.stdout);
     this.conversationId = parsed.conversationId || this.conversationId;
+    if (!parsed.response && this.conversationId) {
+      const recoveryArgs = buildAntigravityArgs({
+        prompt: 'Return the concise non-empty final user-facing response for the immediately previous request. Do not make additional project changes.',
+        model: effectiveModel,
+        reasoning: this.reasoning,
+        yes: false,
+        conversationId: this.conversationId
+      });
+      const recovery = await this.captureBackend(binary, recoveryArgs, {
+        cwd: this.workspace,
+        env: googleAccountEnv(process.env),
+        signal
+      });
+      if (recovery.code !== 0) {
+        const detail = String(recovery.stderr || recovery.stdout || '').trim();
+        throw new Error(`Google Antigravity returned an empty final response and response recovery failed${detail ? `: ${detail}` : '.'}`);
+      }
+      parsed = parseAntigravityJson(recovery.stdout);
+      this.conversationId = parsed.conversationId || this.conversationId;
+    }
+    if (!parsed.response) {
+      throw new Error('Google Antigravity completed the request but returned no final response text.');
+    }
     return parsed.response;
   }
 }

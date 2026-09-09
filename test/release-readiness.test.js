@@ -18,10 +18,19 @@ test('release metadata is explicit and production files include hardening module
   assert.equal(pkg.bugs.url, 'https://github.com/Jervis-UMTC/antigravity-cli-npm/issues');
   assert.equal(pkg.homepage, 'https://github.com/Jervis-UMTC/antigravity-cli-npm#readme');
   assert.match(pkg.scripts['release:check'], /npm publish --dry-run --ignore-scripts --json/);
-  assert.equal(pkg.bin.agy, 'bin/agy.js');
+  assert.equal(pkg.bin.agyc, 'bin/agy.js');
+  assert.equal(pkg.bin['antigravity-cli-npm'], 'bin/agy.js');
+  assert.equal(pkg.bin.agy, undefined);
+  assert.equal(pkg.bin.antigravity, undefined);
   assert.equal(pkg.dependencies.fflate, '0.8.3');
   assert.equal(pkg.dependencies['@lydell/node-pty'], '1.1.0');
   assert.equal(pkg.dependencies['@google/gemini-cli'], undefined);
+  assert.ok(pkg.keywords.includes('agyc'));
+
+  for (const runtimeFile of ['src/agent.js', 'src/google-agent.js']) {
+    const runtime = await fs.readFile(path.join(ROOT, runtimeFile), 'utf8');
+    assert.equal(runtime.includes("'(no response)'"), false, `${runtimeFile} must not emit a fake no-response placeholder`);
+  }
 
   const lock = JSON.parse(await fs.readFile(path.join(ROOT, 'package-lock.json'), 'utf8'));
   const pty = lock.packages['node_modules/@lydell/node-pty'];
