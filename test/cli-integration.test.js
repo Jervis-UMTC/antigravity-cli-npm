@@ -7,6 +7,8 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { createGoogleAuthBootstrap } from '../src/cli.js';
+import { createStagingWorkspace } from '../src/staging.js';
+import { createTaskStore } from '../src/task-state.js';
 
 const CLI = fileURLToPath(new URL('../bin/agy.js', import.meta.url));
 
@@ -54,6 +56,23 @@ function runCli(workspace, stateRoot, baseUrl, args, { explicitAuth = true, extr
       stdio: ['ignore', 'pipe', 'pipe']
     });
 
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => { stdout += chunk.toString('utf8'); });
+    child.stderr.on('data', (chunk) => { stderr += chunk.toString('utf8'); });
+    child.once('error', reject);
+    child.once('close', (code) => resolve({ code, stdout, stderr }));
+  });
+}
+
+function runCliCommand(workspace, stateRoot, baseUrl, command, args = []) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [CLI, command, '--auth', 'api-key', '--base-url', baseUrl, ...args], {
+      cwd: workspace,
+      windowsHide: true,
+      env: { ...process.env, GEMINI_API_KEY: 'test-key', ANTIGRAVITY_HOME: stateRoot },
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (chunk) => { stdout += chunk.toString('utf8'); });
@@ -288,6 +307,66 @@ test('persisted global preferences control model, reasoning, auth, and approval 
     assert.equal(await fs.readFile(path.join(workspace, 'preference.txt'), 'utf8'), 'persisted');
   } finally {
     await fake.close();
+    await fs.rm(workspace, { recursive: true, force: true });
+    await fs.rm(stateRoot, { recursive: true, force: true });
+  }
+});
+
+test('an interrupted staged task can resume safely and publish its preserved changes', async () => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-resume-cli-'));
+  const stateRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-resume-state-'));
+  await fs.writeFile(path.join(workspace, 'app.txt'), 'before\n', 'utf8');
+  const staging = await createStagingWorkspace(workspace);
+  await staging.begin();
+  await fs.writeFile(path.join(staging.workspace, 'app.txt'), 'partial from interrupted task\n', 'utf8');
+  const taskStore = await createTaskStore(workspace, { baseDir: stateRoot });
+  await taskStore.save({ prompt: 'update app.txt after interruption', container: staging.container, attachments: [] });
+  await staging.close({ preserve: true });
+
+  const fake = await startFakeGemini((index) => index === 0
+    ? { body: { candidates: [{ content: { role: 'model', parts: [{ functionCall: { name: 'read_file', args: { path: 'app.txt' } } }] } }] } }
+    : modelText('resumed and verified'));
+  try {
+    const result = await runCliCommand(workspace, stateRoot, fake.baseUrl, 'resume');
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stdout.trim(), 'resumed and verified');
+    assert.equal(await fs.readFile(path.join(workspace, 'app.txt'), 'utf8'), 'partial from interrupted task\n');
+    assert.equal(await taskStore.load(), null);
+    const historyFiles = await fs.readdir(path.join(stateRoot, 'history'));
+    assert.equal(historyFiles.length, 1);
+  } finally {
+    await fake.close();
+    await taskStore.clear({ removeStage: true }).catch(() => {});
+    await fs.rm(workspace, { recursive: true, force: true });
+    await fs.rm(stateRoot, { recursive: true, force: true });
+  }
+});
+
+test('a new task is blocked while an interrupted staged task is waiting for resume or clear', async () => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-resume-block-cli-'));
+  const stateRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-resume-block-state-'));
+  await fs.writeFile(path.join(workspace, 'app.txt'), 'before\n', 'utf8');
+  const staging = await createStagingWorkspace(workspace);
+  await staging.begin();
+  await fs.writeFile(path.join(staging.workspace, 'app.txt'), 'pending\n', 'utf8');
+  const taskStore = await createTaskStore(workspace, { baseDir: stateRoot });
+  await taskStore.save({ prompt: 'pending task', container: staging.container, attachments: [] });
+  await staging.close({ preserve: true });
+  const fake = await startFakeGemini(() => modelText('should not run'));
+  try {
+    const result = await runCli(workspace, stateRoot, fake.baseUrl, ['-p', 'start a different task']);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /interrupted task is available/i);
+    assert.equal(fake.requests.length, 0);
+    assert.equal(await fs.readFile(path.join(workspace, 'app.txt'), 'utf8'), 'before\n');
+    const status = await runStandalone(workspace, stateRoot, ['task']);
+    assert.match(status.stdout, /task=pending/);
+    const clear = await runStandalone(workspace, stateRoot, ['task', 'clear']);
+    assert.equal(clear.code, 0, clear.stderr);
+    assert.equal(await taskStore.load(), null);
+  } finally {
+    await fake.close();
+    await taskStore.clear({ removeStage: true }).catch(() => {});
     await fs.rm(workspace, { recursive: true, force: true });
     await fs.rm(stateRoot, { recursive: true, force: true });
   }

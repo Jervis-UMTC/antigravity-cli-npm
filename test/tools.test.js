@@ -72,6 +72,60 @@ test('large file reads are bounded and point the agent to line ranges', async ()
   }
 });
 
+test('validation discovery, symbol navigation, atomic patching, and argv process execution work together', async () => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-agent-tools-'));
+  try {
+    await fs.mkdir(path.join(workspace, 'src'));
+    await fs.writeFile(path.join(workspace, 'package.json'), JSON.stringify({ scripts: { test: 'node --test', typecheck: 'tsc --noEmit' } }), 'utf8');
+    await fs.writeFile(path.join(workspace, 'src', 'one.js'), 'export function calculate() { return 1; }\nconsole.log(calculate());\n', 'utf8');
+    await fs.writeFile(path.join(workspace, 'src', 'two.js'), 'const value = calculate();\n', 'utf8');
+    const tools = await createTools({ workspace, approveCommand: async () => true });
+
+    const checks = await tools.execute('discover_checks', {});
+    assert.match(checks, /npm test/);
+    assert.match(checks, /npm run typecheck/);
+
+    const symbol = await tools.execute('find_symbol', { name: 'calculate' });
+    assert.match(symbol, /one\.js:1/);
+    const references = await tools.execute('find_references', { name: 'calculate' });
+    assert.match(references, /one\.js:1/);
+    assert.match(references, /two\.js:1/);
+
+    const patch = await tools.execute('apply_patch', { changes: [
+      { path: 'src/one.js', old_text: 'return 1', new_text: 'return 2' },
+      { path: 'src/two.js', old_text: 'const value', new_text: 'const result' }
+    ] });
+    assert.match(patch, /2 patch hunks across 2 files/);
+    assert.match(await fs.readFile(path.join(workspace, 'src', 'one.js'), 'utf8'), /return 2/);
+    assert.match(await fs.readFile(path.join(workspace, 'src', 'two.js'), 'utf8'), /const result/);
+
+    const processResult = await tools.execute('run_process', {
+      executable: process.execPath,
+      args: ['-e', 'console.log("ARGV_OK")']
+    });
+    assert.match(processResult, /ARGV_OK/);
+  } finally {
+    await fs.rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test('apply_patch validates every hunk before writing any file', async () => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-patch-atomic-'));
+  try {
+    await fs.writeFile(path.join(workspace, 'one.txt'), 'one\n', 'utf8');
+    await fs.writeFile(path.join(workspace, 'two.txt'), 'two\n', 'utf8');
+    const tools = await createTools({ workspace });
+    await assert.rejects(() => tools.execute('apply_patch', { changes: [
+      { path: 'one.txt', old_text: 'one', new_text: 'changed' },
+      { path: 'two.txt', old_text: 'missing', new_text: 'changed' }
+    ] }), /Could not find/);
+    assert.equal(await fs.readFile(path.join(workspace, 'one.txt'), 'utf8'), 'one\n');
+    assert.equal(await fs.readFile(path.join(workspace, 'two.txt'), 'utf8'), 'two\n');
+  } finally {
+    await fs.rm(workspace, { recursive: true, force: true });
+  }
+});
+
 test('aborted tool execution does not start a shell command', async () => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-tools-abort-'));
   try {

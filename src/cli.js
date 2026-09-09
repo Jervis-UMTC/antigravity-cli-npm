@@ -6,11 +6,21 @@ import { CodingAgent, defaults, discoverApiModels } from './agent.js';
 import { createActivityIndicator } from './activity.js';
 import { attachmentSummary, resolveAttachment } from './attachments.js';
 import { isCancellation } from './cancel.js';
-import { discoverGoogleModels, GoogleAccountAgent, googleRuntimeStatus, loginWithGoogle } from './google-agent.js';
+import { renderDoctor, runDoctor } from './doctor.js';
+import {
+  discoverGoogleModels,
+  GoogleAccountAgent,
+  googleRuntimeStatus,
+  loginWithGoogle,
+  officialAntigravityBinaryPath,
+  providerProvenanceStatus,
+  updateOfficialAntigravityCli
+} from './google-agent.js';
 import { appendConversationTurn, createHistoryStore, renderConversation } from './history.js';
 import { initializeProject } from './init.js';
 import { createSettingsStore, mergeRuntimePreferences } from './settings.js';
 import { createStagingWorkspace } from './staging.js';
+import { createTaskStore } from './task-state.js';
 import { createTools } from './tools.js';
 
 const MODEL_ALIASES = ['auto', 'pro', 'flash', 'flash-lite'];
@@ -58,6 +68,7 @@ function normalizeReasoning(value) {
 function parseArgs(argv) {
   const result = {
     command: null,
+    commandArg: null,
     print: null,
     attachments: [],
     yes: null,
@@ -71,7 +82,10 @@ function parseArgs(argv) {
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
-    if ((arg === 'login' || arg === 'init') && i === 0) result.command = arg;
+    if (i === 0 && ['login', 'init', 'doctor', 'resume', 'provider', 'task'].includes(arg)) {
+      result.command = arg;
+      if (['provider', 'task'].includes(arg) && argv[i + 1] && !argv[i + 1].startsWith('-')) result.commandArg = argv[++i];
+    }
     else if (arg === '-p' || arg === '--print') result.print = argv[++i] ?? '';
     else if (arg === '--attach') result.attachments.push(argv[++i] ?? '');
     else if (arg === '-y' || arg === '--yes') result.yes = true;
@@ -93,7 +107,7 @@ function parseArgs(argv) {
 }
 
 function helpText(version) {
-  return `agyc ${version}\n\nUsage:\n  agyc                            Start in the current directory\n  agyc login                      Verify or renew Google sign-in\n  agyc init                       Create an optional AGENTS.md template\n  agyc -p "fix the tests"         Run one instruction and exit\n  agyc --attach <path>            Attach a file to the next instruction\n  agyc --model <name>             Choose a model\n  agyc --reasoning auto|low|high  Set reasoning effort\n  agyc --auth auto|google|api-key Set authentication\n  agyc --yes                      Allow commands without prompts\n\nCommands:\n  help                           Show this text\n  status                         Show current settings and connection health\n  init                           Create AGENTS.md when explicitly requested\n  attach <path>                  Attach image/PDF/Office/text file to next instruction\n  attach                         List pending attachments\n  attach clear                   Clear pending attachments\n  history                        Show project conversation history\n  history clear                  Clear project conversation history\n  history path                   Show external history file path\n  model                          Show current model\n  model <name>                   Change and persist model\n  reasoning                      Show reasoning effort\n  reasoning auto|low|high        Change and persist reasoning effort\n  auth                           Show authentication mode\n  auth auto|google|api-key       Change and persist authentication mode\n  approval                       Show command approval mode\n  approval ask|yes               Change and persist approval mode\n  login                          Verify or renew Google sign-in\n  clear                          Clear conversation state\n  cwd                            Print current directory\n  cls                            Clear the terminal\n  exit                           Exit\n`;
+  return `agyc ${version}\n\nUsage:\n  agyc                            Start in the current directory\n  agyc doctor                     Check local installation/runtime health\n  agyc login                      Verify or renew Google sign-in\n  agyc provider [status|update]   Inspect or update the private Google backend\n  agyc resume                     Resume an interrupted staged task\n  agyc task [clear]               Inspect or discard an interrupted task\n  agyc init                       Create an optional AGENTS.md template\n  agyc -p "fix the tests"         Run one instruction and exit\n  agyc --attach <path>            Attach a file to the next instruction\n  agyc --model <name>             Choose a model\n  agyc --reasoning auto|low|high  Set reasoning effort\n  agyc --auth auto|google|api-key Set authentication\n  agyc --yes                      Allow commands without prompts\n\nCommands:\n  help                           Show this text\n  status                         Show current settings and connection health\n  doctor                         Check installation/runtime health\n  provider                       Show private provider status/provenance\n  provider update                Reinstall/update provider with rollback validation\n  resume                         Resume a task left by an interrupted process\n  task                           Show whether an interrupted task exists\n  task clear                     Discard an interrupted task and staged copy\n  init                           Create AGENTS.md when explicitly requested\n  attach <path>                  Attach image/PDF/Office/text file to next instruction\n  attach                         List pending attachments\n  attach clear                   Clear pending attachments\n  history                        Show project conversation history\n  history clear                  Clear project conversation history\n  history path                   Show external history file path\n  model                          Show current model\n  model <name>                   Change and persist model\n  reasoning                      Show reasoning effort\n  reasoning auto|low|high        Change and persist reasoning effort\n  auth                           Show authentication mode\n  auth auto|google|api-key       Change and persist authentication mode\n  approval                       Show command approval mode\n  approval ask|yes               Change and persist approval mode\n  login                          Verify or renew Google sign-in\n  clear                          Clear conversation state\n  cwd                            Print current directory\n  cls                            Clear the terminal\n  exit                           Exit\n`;
 }
 
 function promptLabel(workspace) {
@@ -103,6 +117,11 @@ function promptLabel(workspace) {
 function resolveAuthMode(options) {
   if (options.auth !== 'auto') return options.auth;
   return process.env.GEMINI_API_KEY ? 'api-key' : 'google';
+}
+
+function currentModel(options) {
+  if (options.model) return options.model;
+  return resolveAuthMode(options) === 'google' ? 'auto' : defaults.model;
 }
 
 export function createGoogleAuthBootstrap(options, {
@@ -138,7 +157,8 @@ async function buildAgent(options, rl, stagedWorkspace, displayWorkspace, histor
       model: options.model || 'auto',
       reasoning: options.reasoning,
       yes: options.yes,
-      history
+      history,
+      onActivity: (phase) => getActivity()?.setPhase?.(phase)
     });
   }
 
@@ -168,7 +188,8 @@ async function buildAgent(options, rl, stagedWorkspace, displayWorkspace, histor
     model: options.model || defaults.model,
     reasoning: options.reasoning,
     baseUrl: options.baseUrl,
-    history
+    history,
+    onActivity: (phase) => getActivity()?.setPhase?.(phase)
   });
 }
 
@@ -184,39 +205,170 @@ async function resolveAttachmentList(values, workspace) {
   return attachments;
 }
 
+function interruptedTaskLine(task) {
+  return task ? `task=pending${task.createdAt ? ` since=${task.createdAt}` : ''}` : 'task=none';
+}
+
+async function providerStatusLine() {
+  const binaryPath = officialAntigravityBinaryPath();
+  const [runtime, provenance] = await Promise.all([
+    googleRuntimeStatus(),
+    providerProvenanceStatus({ binaryPath })
+  ]);
+  return `provider=${runtime.backend}${runtime.version ? ` version=${runtime.version}` : ''} account=${runtime.account} provenance=${provenance.status} path=${binaryPath}`;
+}
+
+async function runProviderCommand(argument, stream = output) {
+  const command = String(argument || 'status').trim().toLowerCase() || 'status';
+  if (command === 'status') {
+    stream.write(`${await providerStatusLine()}\n`);
+    return;
+  }
+  if (command !== 'update') throw new Error('Provider command must be provider or provider update.');
+
+  const indicator = createActivityIndicator(stream);
+  indicator.setPhase('Updating provider');
+  try {
+    const result = await updateOfficialAntigravityCli();
+    indicator.stop();
+    stream.write(`provider=updated version=${result.version || 'unknown'} provenance=${result.provenance.status} path=${result.binaryPath}\n`);
+  } catch (error) {
+    indicator.stop();
+    throw error;
+  }
+}
+
+function resumeAttachments(attachments = []) {
+  return attachments.map((attachment) => attachment.kind === 'office'
+    ? { ...attachment, kind: 'text', mimeType: 'text/plain', sourcePath: attachment.stagedPath }
+    : attachment);
+}
+
+async function executeAgentTask({
+  options,
+  rl,
+  workspace,
+  conversation,
+  attachments = [],
+  text = null,
+  resume = false,
+  taskStore,
+  controller,
+  activity
+}) {
+  const pending = await taskStore.load();
+  if (resume && !pending) throw new Error('No interrupted task is available in this project.');
+  if (!resume && pending) {
+    throw new Error('An interrupted task is available. Run `resume` to continue it or `task clear` to discard it.');
+  }
+
+  const staging = await createStagingWorkspace(workspace, pending ? { container: pending.container } : {});
+  let preserveStage = false;
+  try {
+    activity?.setPhase('Preparing');
+    let stagedAttachments;
+    let modelPrompt;
+    let userText;
+    let historyAttachments;
+
+    if (pending) {
+      await staging.resume();
+      stagedAttachments = resumeAttachments(pending.attachments);
+      userText = pending.prompt;
+      historyAttachments = pending.attachments.map((attachment) => ({
+        sourcePath: attachment.sourcePath || attachment.stagedPath,
+        name: attachment.name,
+        mimeType: attachment.mimeType,
+        kind: attachment.kind
+      }));
+      modelPrompt = `Continue the interrupted task from the existing staged project state. Reinspect any partial changes, validate the final result, and finish safely.\n\nOriginal request:\n${pending.prompt}`;
+    } else {
+      await staging.begin();
+      stagedAttachments = await staging.stageAttachments(attachments);
+      userText = String(text || '').trim();
+      historyAttachments = attachments;
+      modelPrompt = userText;
+      await taskStore.save({ prompt: userText, container: staging.container, attachments: stagedAttachments });
+    }
+
+    activity?.setPhase('Inspecting');
+    const agent = await buildAgent(options, rl, staging.workspace, workspace, conversation, () => activity);
+    const answer = await agent.prompt(modelPrompt, {
+      attachments: stagedAttachments,
+      signal: controller?.signal
+    });
+    activity?.setPhase('Applying changes');
+    await staging.commit({ signal: controller?.signal });
+    await taskStore.clear();
+    return { answer, userText, historyAttachments };
+  } catch (error) {
+    if (error?.code === 'RESUME_CONFLICT') {
+      preserveStage = true;
+    } else {
+      try { await taskStore.clear(); } catch {}
+      try { await staging.discard(); } catch {}
+    }
+    throw error;
+  } finally {
+    await staging.close({ preserve: preserveStage });
+  }
+}
 async function runInteractive(options, workspace, settingsStore) {
   if (!input.isTTY || !output.isTTY) {
     throw new Error('Interactive mode requires a terminal. Use agyc -p "your prompt" for non-interactive use.');
   }
 
   const rl = readline.createInterface({ input, output, terminal: true });
-  const staging = await createStagingWorkspace(workspace);
   const historyStore = await createHistoryStore(workspace);
+  const taskStore = await createTaskStore(workspace);
   let conversation = await historyStore.load();
   let pendingAttachments = await resolveAttachmentList(options.attachments, workspace);
   let activeIndicator = null;
   let activeController = null;
-  const getActivity = () => activeIndicator;
   const authBootstrap = createGoogleAuthBootstrap(options, {
     notify: (message) => output.write(`${message}\n`)
   });
-  let agent = await buildAgent(options, rl, staging.workspace, workspace, conversation, getActivity);
-
-  const rebuildAgent = async () => {
-    agent = await buildAgent(options, rl, staging.workspace, workspace, conversation, getActivity);
-  };
 
   const clearConversation = async () => {
     conversation = [];
     pendingAttachments = [];
     await historyStore.clear();
-    await rebuildAgent();
   };
 
   const onSigint = () => {
     if (activeController) activeController.abort();
   };
   rl.on('SIGINT', onSigint);
+
+  const processRequest = async (text, { resume = false } = {}) => {
+    const existing = await taskStore.load();
+    if (resume && !existing) throw new Error('No interrupted task is available in this project.');
+    if (!resume && existing) {
+      throw new Error('An interrupted task is available. Run `resume` to continue it or `task clear` to discard it.');
+    }
+    await authBootstrap.ensure();
+    activeIndicator = createActivityIndicator(output);
+    activeIndicator.setPhase('Preparing');
+    activeController = new AbortController();
+    try {
+      return await executeAgentTask({
+        options,
+        rl,
+        workspace,
+        conversation,
+        attachments: pendingAttachments,
+        text,
+        resume,
+        taskStore,
+        controller: activeController,
+        activity: activeIndicator
+      });
+    } finally {
+      activeIndicator?.stop();
+      activeIndicator = null;
+      activeController = null;
+    }
+  };
 
   try {
     while (true) {
@@ -229,11 +381,8 @@ async function runInteractive(options, workspace, settingsStore) {
         continue;
       }
       if (line === 'clear') {
-        try {
-          await clearConversation();
-        } catch (error) {
-          output.write(`\nError: ${error instanceof Error ? error.message : String(error)}\n\n`);
-        }
+        try { await clearConversation(); }
+        catch (error) { output.write(`\nError: ${error instanceof Error ? error.message : String(error)}\n\n`); }
         continue;
       }
       if (line === 'cwd') {
@@ -253,6 +402,44 @@ async function runInteractive(options, workspace, settingsStore) {
         }
         continue;
       }
+      if (line === 'doctor') {
+        try {
+          const report = await runDoctor({ version: await packageVersion(), workspace });
+          output.write(`${renderDoctor(report)}\n`);
+        } catch (error) {
+          output.write(`\nError: ${error instanceof Error ? error.message : String(error)}\n\n`);
+        }
+        continue;
+      }
+
+      const provider = commandArgument(line, 'provider');
+      if (provider !== null) {
+        try {
+          await runProviderCommand(provider, output);
+          output.write('\n');
+          authBootstrap.reset();
+        } catch (error) {
+          output.write(`\nError: ${error instanceof Error ? error.message : String(error)}\n\n`);
+        }
+        continue;
+      }
+
+      const taskCommand = commandArgument(line, 'task');
+      if (taskCommand !== null) {
+        try {
+          if (!taskCommand || taskCommand === 'status') {
+            output.write(`${interruptedTaskLine(await taskStore.load())}\n\n`);
+          } else if (taskCommand === 'clear') {
+            await taskStore.clear({ removeStage: true });
+          } else {
+            throw new Error('Task command must be task or task clear.');
+          }
+        } catch (error) {
+          output.write(`\nError: ${error instanceof Error ? error.message : String(error)}\n\n`);
+        }
+        continue;
+      }
+
       if (line === 'status') {
         const turns = conversation.filter((message) => message.role === 'user').length;
         const authMode = resolveAuthMode(options);
@@ -263,7 +450,8 @@ async function runInteractive(options, workspace, settingsStore) {
           backend = runtime.backend;
           account = runtime.account;
         }
-        output.write(`model=${agent.model} reasoning=${options.reasoning} auth=${authMode} approval=${options.yes ? 'yes' : 'ask'} backend=${backend} account=${account} attachments=${pendingAttachments.length} history=${turns}\n\n`);
+        const task = await taskStore.load().catch(() => null);
+        output.write(`model=${currentModel(options)} reasoning=${options.reasoning} auth=${authMode} approval=${options.yes ? 'yes' : 'ask'} backend=${backend} account=${account} attachments=${pendingAttachments.length} history=${turns} task=${task ? 'pending' : 'none'}\n\n`);
         continue;
       }
       if (line === 'login') {
@@ -312,18 +500,16 @@ async function runInteractive(options, workspace, settingsStore) {
 
       const model = commandArgument(line, 'model');
       if (model !== null) {
-        if (!model) output.write(`${agent.model}\n\n`);
+        if (!model) output.write(`${currentModel(options)}\n\n`);
         else if (model === 'list') {
-          const models = await availableModels(options, workspace, agent.model);
+          const models = await availableModels(options, workspace, currentModel(options));
           output.write(`${models.join('\n')}\n\n`);
         } else {
-          const previous = agent.model;
           try {
-            agent.setModel(model);
+            if (!model.trim()) throw new Error('Model name cannot be empty.');
             await settingsStore.update({ model });
             options.model = model;
           } catch (error) {
-            if (previous) agent.setModel(previous);
             output.write(`\nError: ${error instanceof Error ? error.message : String(error)}\n\n`);
           }
         }
@@ -339,7 +525,6 @@ async function runInteractive(options, workspace, settingsStore) {
             const next = normalizeReasoning(reasoning);
             await settingsStore.update({ reasoning: next });
             options.reasoning = next;
-            agent.setReasoning(next);
           } catch (error) {
             output.write(`\nError: ${error instanceof Error ? error.message : String(error)}\n\n`);
           }
@@ -356,17 +541,12 @@ async function runInteractive(options, workspace, settingsStore) {
             if (!['auto', 'google', 'api-key'].includes(auth)) {
               throw new Error('Authentication must be auto, google, or api-key.');
             }
-            const previous = options.auth;
+            if (auth === 'api-key' && !process.env.GEMINI_API_KEY) {
+              throw new Error('Missing GEMINI_API_KEY for API-key mode.');
+            }
+            await settingsStore.update({ auth });
             options.auth = auth;
             authBootstrap.reset();
-            try {
-              await rebuildAgent();
-              await settingsStore.update({ auth });
-            } catch (error) {
-              options.auth = previous;
-              await rebuildAgent();
-              throw error;
-            }
           } catch (error) {
             output.write(`\nError: ${error instanceof Error ? error.message : String(error)}\n\n`);
           }
@@ -382,10 +562,8 @@ async function runInteractive(options, workspace, settingsStore) {
           output.write('\nError: Approval must be ask or yes.\n\n');
         } else {
           try {
-            const yes = approval === 'yes';
             await settingsStore.update({ approval });
-            options.yes = yes;
-            if (typeof agent.setApproval === 'function') agent.setApproval(yes);
+            options.yes = approval === 'yes';
           } catch (error) {
             output.write(`\nError: ${error instanceof Error ? error.message : String(error)}\n\n`);
           }
@@ -393,55 +571,38 @@ async function runInteractive(options, workspace, settingsStore) {
         continue;
       }
 
-      let answer;
+      const isResume = line === 'resume';
+      let result;
       try {
-        await authBootstrap.ensure();
+        result = await processRequest(isResume ? null : line, { resume: isResume });
       } catch (error) {
-        output.write(`\nError: ${error instanceof Error ? error.message : String(error)}\n\n`);
-        continue;
-      }
-      activeIndicator = createActivityIndicator(output);
-      activeController = new AbortController();
-      try {
-        await staging.begin();
-        const stagedAttachments = await staging.stageAttachments(pendingAttachments);
-        answer = await agent.prompt(line, { attachments: stagedAttachments, signal: activeController.signal });
-        activeIndicator.setMessage('Applying changes...');
-        await staging.commit({ signal: activeController.signal });
-      } catch (error) {
-        activeIndicator.stop();
-        activeIndicator = null;
-        activeController = null;
-        await staging.discard();
         if (error?.code === 'GOOGLE_AUTH_REQUIRED') authBootstrap.reset();
-        await rebuildAgent();
         if (isCancellation(error)) output.write('\nCanceled.\n\n');
         else output.write(`\nError: ${error instanceof Error ? error.message : String(error)}\n\n`);
         continue;
       }
-      activeIndicator.stop();
-      activeIndicator = null;
-      activeController = null;
 
-      conversation = appendConversationTurn(conversation, line, attachmentSummary(pendingAttachments), answer);
+      conversation = appendConversationTurn(
+        conversation,
+        result.userText,
+        attachmentSummary(result.historyAttachments),
+        result.answer
+      );
       pendingAttachments = [];
       let historyError = null;
-      try {
-        await historyStore.save(conversation);
-      } catch (error) {
-        historyError = error;
-      }
+      try { await historyStore.save(conversation); }
+      catch (error) { historyError = error; }
 
-      output.write(`\n${answer}\n\n`);
+      output.write(`\n${result.answer}\n\n`);
       if (historyError) {
         output.write(`Error: Conversation history was not saved: ${historyError instanceof Error ? historyError.message : String(historyError)}\n\n`);
       }
     }
   } finally {
     activeController?.abort();
+    activeIndicator?.stop();
     rl.off('SIGINT', onSigint);
     rl.close();
-    await staging.close();
   }
 }
 
@@ -456,6 +617,31 @@ export async function main(argv = process.argv.slice(2)) {
   }
   if (parsedOptions.version) {
     output.write(`${version}\n`);
+    return;
+  }
+
+  if (parsedOptions.command === 'doctor') {
+    const report = await runDoctor({ version, workspace });
+    output.write(renderDoctor(report));
+    if (!report.ok) process.exitCode = 1;
+    return;
+  }
+
+  if (parsedOptions.command === 'provider') {
+    await runProviderCommand(parsedOptions.commandArg, output);
+    return;
+  }
+
+  if (parsedOptions.command === 'task') {
+    const taskStore = await createTaskStore(workspace);
+    const command = String(parsedOptions.commandArg || 'status').toLowerCase();
+    if (command === 'status') {
+      output.write(`${interruptedTaskLine(await taskStore.load())}\n`);
+    } else if (command === 'clear') {
+      await taskStore.clear({ removeStage: true });
+    } else {
+      throw new Error('Task command must be task or task clear.');
+    }
     return;
   }
 
@@ -483,39 +669,57 @@ export async function main(argv = process.argv.slice(2)) {
     notify: (message) => output.write(`${message}\n`)
   });
 
-  if (options.print !== null) {
-    if (!options.print.trim()) throw new Error('Prompt cannot be empty.');
-    await authBootstrap.ensure();
-    const staging = await createStagingWorkspace(workspace);
+  const shouldResume = parsedOptions.command === 'resume';
+  if (shouldResume || options.print !== null) {
+    if (!shouldResume && !String(options.print || '').trim()) throw new Error('Prompt cannot be empty.');
+    if (shouldResume && options.attachments.length) throw new Error('Resume uses the attachments saved with the interrupted task.');
+
     const historyStore = await createHistoryStore(workspace);
+    const taskStore = await createTaskStore(workspace);
     const conversation = await historyStore.load();
-    const attachments = await resolveAttachmentList(options.attachments, workspace);
+    const pending = await taskStore.load();
+    if (shouldResume && !pending) throw new Error('No interrupted task is available in this project.');
+    if (!shouldResume && pending) {
+      throw new Error('An interrupted task is available. Run `agyc resume` to continue it or `agyc task clear` to discard it.');
+    }
+
+    await authBootstrap.ensure();
+    const attachments = shouldResume ? [] : await resolveAttachmentList(options.attachments, workspace);
     const controller = new AbortController();
+    const indicator = createActivityIndicator(output);
+    indicator.setPhase('Preparing');
     const onSigint = () => controller.abort();
     process.once('SIGINT', onSigint);
     try {
-      await staging.begin();
-      const stagedAttachments = await staging.stageAttachments(attachments);
-      const agent = await buildAgent(options, null, staging.workspace, workspace, conversation);
-      const answer = await agent.prompt(options.print, { attachments: stagedAttachments, signal: controller.signal });
-      await staging.commit({ signal: controller.signal });
-      const updated = appendConversationTurn(conversation, options.print, attachmentSummary(attachments), answer);
+      const result = await executeAgentTask({
+        options,
+        rl: null,
+        workspace,
+        conversation,
+        attachments,
+        text: shouldResume ? null : options.print,
+        resume: shouldResume,
+        taskStore,
+        controller,
+        activity: indicator
+      });
+      indicator.stop();
+      const updated = appendConversationTurn(
+        conversation,
+        result.userText,
+        attachmentSummary(result.historyAttachments),
+        result.answer
+      );
       let historyError = null;
-      try {
-        await historyStore.save(updated);
-      } catch (error) {
-        historyError = error;
-      }
-      output.write(`${answer}\n`);
+      try { await historyStore.save(updated); }
+      catch (error) { historyError = error; }
+      output.write(`${result.answer}\n`);
       if (historyError) {
         output.write(`Error: Conversation history was not saved: ${historyError instanceof Error ? historyError.message : String(historyError)}\n`);
       }
-    } catch (error) {
-      await staging.discard();
-      throw error;
     } finally {
+      indicator.stop();
       process.off('SIGINT', onSigint);
-      await staging.close();
     }
     return;
   }

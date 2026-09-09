@@ -128,6 +128,26 @@ function changedPaths(before, after) {
   return [...keys].filter((key) => before.get(key) !== after.get(key));
 }
 
+function safeResumeContainer(container) {
+  const tempRoot = path.resolve(os.tmpdir());
+  const resolved = path.resolve(container);
+  const relative = path.relative(tempRoot, resolved);
+  return path.basename(resolved).startsWith('agyc-stage-') &&
+    relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
+}
+
+async function saveManifest(file, manifest) {
+  await fs.writeFile(file, `${JSON.stringify([...manifest.entries()])}\n`, { encoding: 'utf8', mode: 0o600 });
+}
+
+async function loadManifest(file) {
+  const parsed = JSON.parse(await fs.readFile(file, 'utf8'));
+  if (!Array.isArray(parsed) || parsed.some((item) => !Array.isArray(item) || item.length !== 2)) {
+    throw new Error('Interrupted staging baseline is invalid.');
+  }
+  return new Map(parsed);
+}
+
 async function copyForBackup(source, destination) {
   await fs.mkdir(path.dirname(destination), { recursive: true });
   await fs.cp(source, destination, {
@@ -189,18 +209,28 @@ async function applyEntry(stageRoot, realRoot, relative, finalFingerprint) {
   }
 }
 
-export async function createStagingWorkspace(realWorkspace) {
+export async function createStagingWorkspace(realWorkspace, { container: resumeContainer = null } = {}) {
   const realRoot = path.resolve(realWorkspace);
-  const container = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-stage-'));
+  let container;
+  if (resumeContainer) {
+    if (!safeResumeContainer(resumeContainer)) {
+      throw new Error('Refusing to resume a task from an invalid staging location.');
+    }
+    container = path.resolve(resumeContainer);
+  } else {
+    container = await fs.mkdtemp(path.join(os.tmpdir(), 'agyc-stage-'));
+  }
   const stageRoot = path.join(container, 'workspace');
   const backupRoot = path.join(container, 'rollback');
   const inputRoot = path.join(container, 'inputs');
+  const baselinePath = path.join(container, 'baseline.json');
   await fs.mkdir(stageRoot, { recursive: true });
   await fs.mkdir(inputRoot, { recursive: true });
 
   let baseline = new Map();
 
   return {
+    container,
     workspace: stageRoot,
 
     async begin() {
@@ -213,10 +243,23 @@ export async function createStagingWorkspace(realWorkspace) {
         const staged = await buildManifest(stageRoot);
         if (manifestsEqual(before, staged)) {
           baseline = before;
+          await saveManifest(baselinePath, baseline);
           return;
         }
       }
       throw new Error('Project changed while preparing the hidden workspace. Run the instruction again.');
+    },
+
+    async resume() {
+      baseline = await loadManifest(baselinePath);
+      const current = await buildManifest(realRoot);
+      if (!manifestsEqual(current, baseline)) {
+        const error = new Error('The real project changed after the interrupted task. The saved task cannot be resumed safely.');
+        error.code = 'RESUME_CONFLICT';
+        throw error;
+      }
+      await isolateGitPointer(realRoot, stageRoot);
+      return true;
     },
 
     async stageAttachments(attachments = []) {
@@ -289,6 +332,7 @@ export async function createStagingWorkspace(realWorkspace) {
       }
 
       baseline = final;
+      await saveManifest(baselinePath, baseline);
       return changes;
     },
 
@@ -298,8 +342,8 @@ export async function createStagingWorkspace(realWorkspace) {
       await clearDirectory(inputRoot);
     },
 
-    async close() {
-      await fs.rm(container, { recursive: true, force: true });
+    async close({ preserve = false } = {}) {
+      if (!preserve) await fs.rm(container, { recursive: true, force: true });
     }
   };
 }

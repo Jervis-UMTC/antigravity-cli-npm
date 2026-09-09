@@ -20,6 +20,37 @@ const functionDeclarations = [
     parameters: { type: 'OBJECT', properties: {} }
   },
   {
+    name: 'discover_checks',
+    description: 'Discover likely authoritative validation commands from project manifests and build files. Use this before deciding how to verify meaningful edits.',
+    parameters: { type: 'OBJECT', properties: {} }
+  },
+  {
+    name: 'find_symbol',
+    description: 'Find likely definitions of a named symbol across common source languages without dumping entire files.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        name: { type: 'STRING', description: 'Exact symbol name to find.' },
+        path: { type: 'STRING', description: 'Optional project-relative search directory.' },
+        max_results: { type: 'NUMBER', description: 'Maximum matches. Defaults to 50.' }
+      },
+      required: ['name']
+    }
+  },
+  {
+    name: 'find_references',
+    description: 'Find exact word references to a symbol across project text files.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        name: { type: 'STRING', description: 'Exact symbol name to find references for.' },
+        path: { type: 'STRING', description: 'Optional project-relative search directory.' },
+        max_results: { type: 'NUMBER', description: 'Maximum matches. Defaults to 100.' }
+      },
+      required: ['name']
+    }
+  },
+  {
     name: 'list_files',
     description: 'List files and directories in the current project. Generated and dependency directories are skipped by default.',
     parameters: {
@@ -70,6 +101,29 @@ const functionDeclarations = [
     }
   },
   {
+    name: 'apply_patch',
+    description: 'Apply multiple exact text hunks atomically across existing project files. Prefer this for coordinated focused edits; use write_file for new files.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        changes: {
+          type: 'ARRAY',
+          items: {
+            type: 'OBJECT',
+            properties: {
+              path: { type: 'STRING', description: 'Project-relative file path.' },
+              old_text: { type: 'STRING', description: 'Exact existing text to replace.' },
+              new_text: { type: 'STRING', description: 'Replacement text.' },
+              occurrence: { type: 'NUMBER', description: 'One-based occurrence when old_text appears more than once. Defaults to 1.' }
+            },
+            required: ['path', 'old_text', 'new_text']
+          }
+        }
+      },
+      required: ['changes']
+    }
+  },
+  {
     name: 'delete_path',
     description: 'Delete a file or directory inside the current project.',
     parameters: {
@@ -92,6 +146,20 @@ const functionDeclarations = [
         max_results: { type: 'NUMBER', description: 'Maximum matches to return. Defaults to 100.' }
       },
       required: ['query']
+    }
+  },
+  {
+    name: 'run_process',
+    description: 'Run a native executable with a structured argument array in the project. Prefer this over shell text when shell syntax is not required.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        executable: { type: 'STRING', description: 'Executable name or path.' },
+        args: { type: 'ARRAY', items: { type: 'STRING' }, description: 'Arguments passed without shell parsing.' },
+        cwd: { type: 'STRING', description: 'Optional project-relative working directory.' },
+        timeout_ms: { type: 'NUMBER', description: 'Timeout in milliseconds. Defaults to 120000.' }
+      },
+      required: ['executable']
     }
   },
   {
@@ -120,7 +188,7 @@ const functionDeclarations = [
 ];
 
 function systemPrompt(workspace) {
-  return `You are an autonomous coding agent operating in this project:\n${workspace}\n\nUse the provided tools to inspect, edit, test, and debug the project until the user's request is actually complete. For broad tasks, map the repository first with project_overview and targeted searches rather than dumping the whole tree. Maintain an internal plan and update it as evidence changes, but never expose private reasoning or tool-by-tool activity. Work only inside the project unless the user explicitly asks for a shell command that does otherwise and the command is approved. Inspect relevant files before editing. Prefer focused edits over rewriting whole files. After meaningful changes, inspect the resulting diff/files and run the most relevant available checks. If a check fails, diagnose it, make evidence-backed fixes, and rerun it instead of stopping at the first failure. Never claim a command passed unless you ran it and saw the result. Do not declare completion immediately after editing without a post-edit verification pass. Keep the final terminal response concise and practical, summarizing the result and validation performed.`;
+  return `You are an autonomous coding agent operating in this project:\n${workspace}\n\nUse the provided tools to inspect, edit, test, and debug the project until the user's request is actually complete. For broad tasks, map the repository first with project_overview, find_symbol/find_references, and targeted searches rather than dumping the whole tree. Use discover_checks to identify authoritative validation commands before choosing tests. Prefer run_process with executable/argument arrays when shell syntax is unnecessary, and use run_command only when a shell is actually needed. Prefer apply_patch for coordinated focused edits across existing files and write_file for new or intentionally rewritten files. Maintain an internal plan and update it as evidence changes, but never expose private reasoning or tool-by-tool activity. Work only inside the project unless the user explicitly asks for a command that does otherwise and the command is approved. Inspect relevant files before editing. After meaningful changes, inspect the resulting diff/files and run the most relevant available checks. If a check fails, diagnose it, make evidence-backed fixes, and rerun it instead of stopping at the first failure. Never claim a command passed unless you ran it and saw the result. Do not declare completion immediately after editing without a successful post-edit verification pass. Keep the final terminal response concise and practical, summarizing the result and validation performed.`;
 }
 
 function normalizeBaseUrl(value) {
@@ -246,7 +314,7 @@ function historyToContents(messages) {
 }
 
 export class CodingAgent {
-  constructor({ workspace, displayWorkspace, tools, apiKey, model, baseUrl, reasoning = 'auto', history = [], fetchImpl = globalThis.fetch }) {
+  constructor({ workspace, displayWorkspace, tools, apiKey, model, baseUrl, reasoning = 'auto', history = [], fetchImpl = globalThis.fetch, onActivity = () => {} }) {
     if (!apiKey) {
       throw new Error('Missing GEMINI_API_KEY. Set it in your environment before starting agyc.');
     }
@@ -261,6 +329,7 @@ export class CodingAgent {
     this.fetchImpl = fetchImpl;
     this.history = historyToContents(history);
     this.resolvedModel = null;
+    this.onActivity = typeof onActivity === 'function' ? onActivity : () => {};
   }
 
   setModel(model) {
@@ -294,6 +363,7 @@ export class CodingAgent {
       let stagnationNudged = false;
       for (let step = 0; step < MAX_STEPS; step += 1) {
         throwIfAborted(signal);
+        if (step === 0) this.onActivity('Inspecting');
         const content = await this.#generate(signal);
         const parts = content.parts || [];
         const calls = parts.filter((part) => part.functionCall).map((part) => part.functionCall);
@@ -326,6 +396,13 @@ export class CodingAgent {
           throw new Error('Gemini completed the request but returned no final response text.');
         }
 
+        const callNames = new Set(calls.map((call) => call.name));
+        const mutationCalls = ['write_file', 'replace_in_file', 'apply_patch', 'delete_path'];
+        const verificationCalls = ['run_command', 'run_process', 'git_diff', 'read_file'];
+        if (mutationCalls.some((name) => callNames.has(name))) this.onActivity('Working');
+        else if (latestMutation >= 0 && verificationCalls.some((name) => callNames.has(name))) this.onActivity('Checking');
+        else this.onActivity('Inspecting');
+
         const responses = [];
         const batchEvidence = [];
         for (const call of calls) {
@@ -340,9 +417,9 @@ export class CodingAgent {
 
           const resultText = String(result ?? '');
           const toolSucceeded = !/^(?:Tool error:|Command failed\.|Command denied by user\.)/.test(resultText);
-          if (toolSucceeded && ['write_file', 'replace_in_file', 'delete_path'].includes(call.name)) {
+          if (toolSucceeded && ['write_file', 'replace_in_file', 'apply_patch', 'delete_path'].includes(call.name)) {
             latestMutation = operationIndex;
-          } else if (toolSucceeded && ['run_command', 'git_diff', 'read_file'].includes(call.name) && latestMutation >= 0) {
+          } else if (toolSucceeded && ['run_command', 'run_process', 'git_diff', 'read_file'].includes(call.name) && latestMutation >= 0) {
             latestVerification = operationIndex;
           }
 

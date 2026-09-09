@@ -2,7 +2,7 @@
 
 A coding agent that looks and behaves like a normal command prompt.
 
-`agyc` intentionally has no AI-style terminal interface: no startup banner, cards, panels, spinner, tool-call stream, model badge, reasoning display, assistant label, or live edit animation. Normal interactive startup is simply:
+`agyc` intentionally has no AI-style terminal interface: no startup banner, cards, panels, animated spinner, tool-call stream, model badge, reasoning display, assistant label, or live edit animation. Normal interactive startup is simply:
 
 ```text
 C:\projects\my-app>
@@ -22,6 +22,8 @@ The agent works behind that prompt. It performs project edits in a private OS-te
 - Supports model selection and hidden reasoning effort controls.
 - Supports images, PDFs, DOCX, XLSX, PPTX, and text/code document attachments.
 - Persists project conversation history and user preferences outside the repository.
+- Can preserve an interrupted task only after abnormal process termination and resume it later without publishing partial work.
+- Includes plain `doctor`, provider provenance/update, and interrupted-task inspection commands.
 - Uses plain CMD-style text commands instead of slash commands or menus.
 
 ## Requirements
@@ -145,7 +147,7 @@ You do **not** need to install Antigravity separately or run `agyc login` before
 
 Google subscription mode now executes through Google's **official Antigravity CLI headless client**, rather than the older Gemini CLI / Code Assist client that rejects personal accounts. The provider binary is invoked by its absolute per-user path, with JSON output captured internally, so its TUI, progress stream, slash commands, banners, and tool narration do not appear inside this wrapper.
 
-The package-managed official backend is deliberately kept out of normal command directories: `%LOCALAPPDATA%\antigravity-cli-npm\provider\agy.exe` on Windows, `~/Library/Application Support/antigravity-cli-npm/provider/agy` on macOS, and `${XDG_DATA_HOME:-~/.local/share}/antigravity-cli-npm/provider/agy` on Linux. `agyc` installs it with the provider's official installer using `--skip-path --skip-aliases` and invokes it only by absolute path, so the provider binary cannot take over this package's command name. The binary is health-checked before first use in each wrapper process; an unhealthy managed backend is replaced through the official installer, while an explicit `ANTIGRAVITY_CLI_BINARY` override is never silently deleted. The provider remains responsible for its own normal self-update behavior.
+The package-managed official backend is deliberately kept out of normal command directories: `%LOCALAPPDATA%\antigravity-cli-npm\provider\agy.exe` on Windows, `~/Library/Application Support/antigravity-cli-npm/provider/agy` on macOS, and `${XDG_DATA_HOME:-~/.local/share}/antigravity-cli-npm/provider/agy` on Linux. `agyc` installs it from Google's official HTTPS installer using `--skip-path --skip-aliases` and invokes it only by absolute path, so the provider binary cannot take over this package's command name. Managed installs record an external provenance receipt beside the binary with the official installer URL plus SHA-256 hashes of the fetched installer and installed binary. `provider`/`doctor` can detect an unrecorded or changed binary, and `provider update` performs a fresh official install, health-checks it, records the new receipt, and restores the previous managed binary if validation fails. An explicit `ANTIGRAVITY_CLI_BINARY` override remains externally managed and is never silently deleted or updated.
 
 Authentication is persistent through the official Antigravity secure account session, including Windows Credential Manager on Windows. Normal `agyc` requests probe that native session automatically and continue silently when it is already usable. On a first use on a new device/user profile, the wrapper starts the official Antigravity binary with no arguments inside a hidden pseudo-terminal rooted in an empty OS-temporary directory. The official client itself opens its Antigravity browser sign-in flow and writes its native secure-keyring session; all provider terminal rendering remains captured and invisible. As soon as the official session becomes usable, the hidden bootstrap process is stopped and `agyc` performs one headless verification request before continuing the original request. There is no Gemini CLI/Code Assist OAuth fallback, no `oauth_creds.json`, and no credential-migration step.
 
@@ -153,7 +155,7 @@ Antigravity **IDE** is not required. The official Antigravity **CLI backend** is
 
 ### Agentic task execution
 
-`agyc` is designed to run multi-step coding tasks rather than behave like a single request/response chat. Broad tasks can begin with a compact project overview, then inspect targeted files, edit multiple paths, run commands, react to failed checks, revise the implementation, and validate again before returning the final response. Direct API mode allows up to 60 model/tool iterations per instruction, retries transient model-service failures automatically, preserves useful head/tail evidence while bounding large tool/file results, requires a successful post-edit verification pass, and detects repeated identical tool loops so the model is told to change strategy instead of wasting its entire step budget. Google subscription mode delegates the coding loop to the official Antigravity agent with equivalent instructions to continue through inspection, implementation, debugging, and validation rather than stopping at the first failure.
+`agyc` is designed to run multi-step coding tasks rather than behave like a single request/response chat. Broad tasks can begin with a compact project overview, discover likely project validation commands, navigate symbol definitions/references, apply focused multi-file patches, run native executables with structured argv when a shell is unnecessary, react to failed checks, revise the implementation, and validate again before returning the final response. Direct API mode allows up to 60 model/tool iterations per instruction, retries transient model-service failures automatically, preserves useful head/tail evidence while bounding large tool/file results, requires a successful post-edit verification pass, and detects repeated identical tool loops so the model is told to change strategy instead of wasting its entire step budget. Google subscription mode delegates the coding loop to the official Antigravity agent with equivalent instructions to continue through inspection, implementation, debugging, and validation rather than stopping at the first failure.
 
 The execution remains transactional while doing this: all autonomous file changes and project commands operate on the disposable staging copy, and only the successful completed result is applied back to the real project.
 
@@ -236,7 +238,7 @@ Added signup validation and updated the endpoint tests.
 C:\projects\my-app>
 ```
 
-There is no visible tool stream while the task is running. For requests that take more than a moment, interactive mode shows one transient native-looking line such as `Working... 12s`. When the finished staged state is being published it briefly becomes `Applying changes...`. The line pauses during permission prompts and is erased before the final response or error appears. Pressing Ctrl+C during active work cancels the request, discards/rolls back staged publication, and returns `Canceled.` without publishing a partial project state.
+There is no visible tool stream while the task is running. For requests that take more than a moment, `agyc` uses one transient plain-text line with simple phases such as `Preparing... 1s`, `Inspecting... 4s`, `Working... 12s`, `Checking... 18s`, and `Applying changes... 21s`. It is not a spinner or progress UI: there are no colors, panels, tool names, model names, reasoning labels, or animations. The line pauses during permission prompts and is erased before the final response or error appears. Pressing Ctrl+C during active work cancels the request, discards/rolls back staged publication, and returns `Canceled.` without publishing a partial project state.
 
 ## One-shot usage
 
@@ -271,7 +273,20 @@ C:\project> status
 model=auto reasoning=auto auth=google approval=ask backend=ready account=connected attachments=0 history=0
 ```
 
-`status` is deliberately terse. It is not shown automatically. In Google mode it performs hidden provider health/account probes; in API-key mode it reports whether the key is configured.
+`status` is deliberately terse. It is not shown automatically. In Google mode it performs hidden provider health/account probes; in API-key mode it reports whether the key is configured. It also reports `task=pending` when an abnormal prior termination left resumable staged work.
+
+### Doctor, provider, and interrupted tasks
+
+```text
+C:\project> doctor
+C:\project> provider
+C:\project> provider update
+C:\project> task
+C:\project> task clear
+C:\project> resume
+```
+
+`doctor` prints plain `name=ok|warn|fail` health lines for the wrapper version, Node/npm, workspace/state writability, command resolution, Google backend/account state, provider provenance, and basic network reachability. `provider` reports the private backend status; `provider update` reinstalls a managed backend from the official installer with post-install validation and rollback. `task` reports whether a crash checkpoint exists, `resume` continues it only if the real-project baseline is still unchanged, and `task clear` deliberately deletes both the checkpoint and its temporary staged copy.
 
 ### Current directory
 
@@ -600,6 +615,10 @@ The wrapper compares the final staging state with the original snapshot and appl
 
 The staging changes are discarded. Ctrl+C propagates into provider/API requests and shell commands where supported. If cancellation occurs during publication, the rollback path restores affected real files. The real project remains at its previous state.
 
+### On abnormal process termination
+
+Before autonomous work begins, `agyc` records a small project-scoped checkpoint outside the repository that points to the OS-temporary staged transaction. A normal success, handled failure, or Ctrl+C removes that checkpoint and staging directory. If the process is killed or crashes before cleanup runs, the checkpoint may remain. `agyc resume` reopens that exact staged copy, verifies that the real project still matches the original baseline, and continues the original request; if the baseline changed, resume refuses to publish. `agyc task clear` discards the interrupted state without touching the real project.
+
 ### On concurrent external edits
 
 Before publishing a changed path, the wrapper verifies that the real path still matches the baseline captured at the beginning of the instruction. If another process changed that path, publication is refused instead of silently overwriting the external change.
@@ -654,11 +673,12 @@ If **you** later run `git add` and `git commit`, that final source diff naturall
 Depending on provider permissions and approval mode, the agent can:
 
 - inspect project files and directory structure;
-- search source text;
+- search source text and find likely symbol definitions/references;
+- discover likely authoritative test/build/lint/type-check commands from project manifests;
 - create files;
-- replace/edit file content;
+- replace/edit file content and apply coordinated exact multi-file patches;
 - delete project paths;
-- run project commands;
+- run native executables with structured argument arrays, or shell commands when shell syntax is actually required;
 - run tests, builds, linters, formatters, and type checks;
 - inspect Git diffs when Git is available;
 - use attached screenshots/images and documents as task context;
@@ -670,7 +690,11 @@ The direct API-key implementation constrains its built-in file tools to the curr
 
 ```text
 agyc
+agyc doctor
 agyc login
+agyc provider [status|update]
+agyc resume
+agyc task [clear]
 agyc init
 agyc -p <prompt>
 agyc --attach <path>
@@ -708,6 +732,7 @@ Short forms:
 | `GOOGLE_CLOUD_PROJECT` | Optional/required for some organization or Workspace Google-account environments. |
 | `ANTIGRAVITY_CLI_BINARY` | Optional absolute path override for the official Google Antigravity CLI backend. |
 | `AGYC_SKIP_PROVIDER_INSTALL` | Optional opt-out (`1`, `true`, `yes`, `on`) for npm-time provider preinstall; Google mode will still bootstrap on first use. |
+| `AGYC_SKIP_PATH_SETUP` | Optional Windows install/CI opt-out for automatic user-PATH mutation. |
 
 ## Typical workflows
 
@@ -764,8 +789,9 @@ Expected failure behavior is conservative:
 
 - invalid attachment path -> request does not run;
 - unsupported attachment -> request does not run;
-- model/API error -> staged project changes are discarded;
-- Ctrl+C during active work -> request is canceled and staged changes are discarded/rolled back;
+- model/API error -> staged project changes and the task checkpoint are discarded;
+- Ctrl+C during active work -> request is canceled and staged changes/checkpoint are discarded/rolled back;
+- abnormal process termination -> staged work may remain resumable outside the project; a new task is blocked until `resume` or `task clear`;
 - command denial -> command is reported to the model as denied;
 - external concurrent edit to a path the agent wants to publish -> publication is refused;
 - invalid history JSON -> explicit history error rather than silently replacing it;
@@ -788,7 +814,8 @@ Normal terminal output may show:
 
 - your project prompt;
 - final model response;
-- explicit `status`, `history`, `attach`, model/auth/reasoning queries;
+- one transient plain task-phase line while work is active;
+- explicit `status`, `doctor`, `provider`, `task`, `history`, `attach`, model/auth/reasoning queries;
 - real errors;
 - permission prompts required for safe execution;
 - the official provider authentication UI while logging in.
@@ -835,7 +862,7 @@ Release guard:
 npm run prepublishOnly
 ```
 
-The test suite covers project-bound file tooling, command approval/cancellation, reasoning and dynamic model aliases, persistent external settings/history, image/PDF/Office/text attachments, bounded Office ZIP parsing, hidden staging publication and rollback, conflict detection, normal and pointer-file Git metadata isolation, backend health/login verification, explicit project init, and full one-shot CLI behavior in non-Git folders using a local fake Gemini endpoint.
+The test suite covers project-bound file tooling, argv process execution, validation discovery, symbol/reference navigation, atomic multi-file patching, command approval/cancellation, transient activity phases, reasoning and dynamic model aliases, persistent external settings/history, resumable crash checkpoints, image/PDF/Office/text attachments, bounded Office ZIP parsing, hidden staging publication and rollback, conflict detection, normal and pointer-file Git metadata isolation, provider provenance/update rollback, doctor diagnostics, explicit project init, and full one-shot CLI behavior in non-Git folders using a local fake Gemini endpoint. GitHub Actions also exercises Windows, macOS, and Linux on Node 20 and 22 with provider/PATH install side effects disabled in CI.
 
 ## Package layout
 
@@ -850,6 +877,8 @@ src/attachments.js      attachment validation, Office extraction, multimodal pre
 src/cancel.js           cancellation helpers and exit-code semantics
 src/history.js          external project-scoped conversation persistence
 src/settings.js         external persistent user preferences
+src/task-state.js       external interrupted-task checkpoint persistence
+src/doctor.js           plain installation/runtime diagnostics
 src/init.js             explicit optional project-instructions initializer
 scripts/setup-path.js    one-time Windows npm PATH bootstrap
 scripts/postinstall.js   npm-time official backend pre-provisioning
@@ -913,6 +942,14 @@ That is intentional. The real project is only updated after a successful instruc
 ### An external edit caused a conflict
 
 Re-run the instruction after reviewing the external change. The wrapper refuses to overwrite a changed baseline path automatically.
+
+### `An interrupted task is available`
+
+A previous `agyc` process ended abnormally after its staged transaction was prepared. Inspect it with `agyc task`, continue it with `agyc resume`, or deliberately discard it with `agyc task clear`. Resume validates the original real-project baseline before publishing anything.
+
+### Provider provenance is `unrecorded` or `changed`
+
+`unrecorded` means the binary predates the provenance receipt or was supplied outside the current managed install flow. `changed` means its current SHA-256 no longer matches the recorded managed-binary digest. `agyc provider update` performs a fresh managed install from the official Google installer and rolls back if the replacement fails its health check. An `ANTIGRAVITY_CLI_BINARY` override is external and cannot be updated by this command.
 
 ### Where is conversation history stored?
 

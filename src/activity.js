@@ -1,9 +1,9 @@
 const DEFAULT_DELAY_MS = 250;
 const DEFAULT_INTERVAL_MS = 1000;
 
-function elapsedLabel(startedAt, now) {
+function elapsedLabel(startedAt, now, phase = 'Working') {
   const seconds = Math.max(0, Math.floor((now - startedAt) / 1000));
-  return `Working... ${seconds}s`;
+  return `${phase}... ${seconds}s`;
 }
 
 export function createActivityIndicator(stream, {
@@ -24,6 +24,7 @@ export function createActivityIndicator(stream, {
   let paused = false;
   let stopped = false;
   let fixedMessage = null;
+  let phase = 'Working';
 
   const clearTimers = () => {
     if (delayTimer) clearTimeoutImpl(delayTimer);
@@ -41,7 +42,7 @@ export function createActivityIndicator(stream, {
 
   const render = () => {
     if (!enabled || paused || stopped) return;
-    const text = fixedMessage || elapsedLabel(startedAt, now());
+    const text = fixedMessage || elapsedLabel(startedAt, now(), phase);
     const padding = Math.max(0, renderedWidth - text.length);
     stream.write(`\r${text}${' '.repeat(padding)}`);
     renderedWidth = Math.max(renderedWidth, text.length);
@@ -63,6 +64,12 @@ export function createActivityIndicator(stream, {
   schedule();
 
   return {
+    setPhase(message) {
+      if (stopped) return;
+      phase = String(message || '').trim().replace(/\.\.\.$/, '') || 'Working';
+      fixedMessage = null;
+      if (enabled && !paused) render();
+    },
     setMessage(message) {
       if (stopped) return;
       fixedMessage = String(message || '').trim() || null;

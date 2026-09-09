@@ -80,6 +80,23 @@ test('activity indicator pauses cleanly for interactive approval and resumes aft
   activity.stop();
 });
 
+test('activity indicator can switch between plain informative phases while keeping elapsed time', () => {
+  const scheduler = fakeScheduler();
+  const stream = ttyStream();
+  let currentTime = 10_000;
+  const activity = createActivityIndicator(stream, { ...scheduler, now: () => currentTime });
+  scheduler.timeouts[0].callback();
+  activity.setPhase('Inspecting');
+  assert.equal(stream.writes.at(-1), '\rInspecting... 0s');
+  currentTime = 12_200;
+  scheduler.intervals[0].callback();
+  assert.equal(stream.writes.at(-1), '\rInspecting... 2s');
+  activity.setPhase('Checking...');
+  assert.equal(stream.writes.at(-1), '\rChecking... 2s  ');
+  activity.stop();
+  assert.equal(stream.writes.at(-1), `\r${' '.repeat('Inspecting... 2s'.length)}\r`);
+});
+
 test('activity indicator can switch to a fixed applying phase and erase it before final output', () => {
   const scheduler = fakeScheduler();
   const stream = ttyStream();

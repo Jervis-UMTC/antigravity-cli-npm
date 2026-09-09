@@ -17,12 +17,15 @@ import {
   installOfficialAntigravityCli,
   loginWithGoogle,
   officialAntigravityBinaryPath,
+  officialAntigravityMetadataPath,
+  providerProvenanceStatus,
   probeOfficialAntigravityBinary,
   parseAntigravityJson,
   parseAntigravityModels,
   parsePublicGoogleModels,
   resolveAntigravityModel,
   runOfficialAntigravityLogin,
+  updateOfficialAntigravityCli,
   verifyOfficialAntigravitySubscription
 } from '../src/google-agent.js';
 
@@ -98,6 +101,11 @@ test('official Antigravity backend auto-install stays outside PATH and honors it
     assert.deepEqual(invocation.args.slice(0, 3), ['/d', '/c', invocation.args[2]]);
     assert.match(invocation.args[2], /agy-google-backend-.*\.cmd$/);
     assert.deepEqual(invocation.args.slice(3), ['--dir', path.dirname(binaryPath), '--skip-path', '--skip-aliases']);
+    const provenance = await providerProvenanceStatus({ binaryPath });
+    assert.equal(provenance.status, 'verified');
+    assert.equal(provenance.sourceUrl, 'https://antigravity.google/cli/install.cmd');
+    assert.match(provenance.installerSha256, /^[a-f0-9]{64}$/);
+    assert.equal(path.basename(officialAntigravityMetadataPath({ binaryPath })), 'provider.json');
 
     let installs = 0;
     assert.equal(await ensureOfficialAntigravityCli({
@@ -142,6 +150,49 @@ test('an unhealthy default backend is replaced and revalidated automatically', a
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
+});
+
+test('provider update validates the new binary and rolls back on failure', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-provider-update-'));
+  const binaryPath = path.join(root, 'provider', 'agy.exe');
+  await fs.mkdir(path.dirname(binaryPath), { recursive: true });
+  await fs.writeFile(binaryPath, 'old-provider', 'utf8');
+  try {
+    const updated = await updateOfficialAntigravityCli({
+      platform: 'win32',
+      env: {},
+      binaryPath,
+      installImpl: async ({ binaryPath: target }) => {
+        await fs.writeFile(target, 'new-provider', 'utf8');
+        return target;
+      },
+      probeImpl: async () => ({ ready: true, version: '9.9.9', error: null })
+    });
+    assert.equal(updated.version, '9.9.9');
+    assert.equal(await fs.readFile(binaryPath, 'utf8'), 'new-provider');
+
+    await assert.rejects(() => updateOfficialAntigravityCli({
+      platform: 'win32',
+      env: {},
+      binaryPath,
+      installImpl: async ({ binaryPath: target }) => {
+        await fs.writeFile(target, 'broken-provider', 'utf8');
+        return target;
+      },
+      probeImpl: async () => ({ ready: false, version: null, error: 'broken' })
+    }), /not usable/);
+    assert.equal(await fs.readFile(binaryPath, 'utf8'), 'new-provider');
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('provider update refuses to take ownership of an externally configured backend', async () => {
+  await assert.rejects(() => updateOfficialAntigravityCli({
+    platform: 'linux',
+    env: { ANTIGRAVITY_CLI_BINARY: '/opt/agy' },
+    binaryPath: '/opt/agy'
+  }), /externally managed backend/);
 });
 
 test('backend health probe validates the official binary version without exposing provider output', async () => {

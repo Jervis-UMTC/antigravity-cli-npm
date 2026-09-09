@@ -26,6 +26,14 @@ test('PATH matching is case-insensitive and expands Windows environment referenc
   );
 });
 
+test('PATH setup supports an explicit non-mutating CI/install opt-out', () => {
+  assert.equal(shouldConfigureWindowsPath({
+    platform: 'win32',
+    packageRoot: 'C:\\work\\antigravity-cli-npm',
+    env: { INIT_CWD: 'C:\\work\\antigravity-cli-npm', AGYC_SKIP_PATH_SETUP: '1' }
+  }), false);
+});
+
 test('PATH setup only runs for direct package work or global installs on Windows', () => {
   const packageRoot = 'C:\\work\\antigravity-cli-npm';
   assert.equal(shouldConfigureWindowsPath({

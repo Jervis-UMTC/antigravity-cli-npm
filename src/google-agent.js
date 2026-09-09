@@ -19,6 +19,7 @@ const ANTIGRAVITY_INSTALL_URLS = {
   default: 'https://antigravity.google/cli/install.sh'
 };
 const ANTIGRAVITY_PRINT_TIMEOUT = '10m';
+const PROVIDER_METADATA_VERSION = 1;
 let publicModelsPromise = null;
 const healthyBackendPaths = new Set();
 
@@ -46,6 +47,67 @@ async function fileExists(file) {
   } catch {
     return false;
   }
+}
+
+function sha256Text(value) {
+  return crypto.createHash('sha256').update(String(value), 'utf8').digest('hex');
+}
+
+async function sha256File(file) {
+  return crypto.createHash('sha256').update(await fs.readFile(file)).digest('hex');
+}
+
+export function officialAntigravityMetadataPath({ binaryPath = officialAntigravityBinaryPath() } = {}) {
+  return path.join(path.dirname(binaryPath), 'provider.json');
+}
+
+async function readProviderMetadata(binaryPath) {
+  const metadataPath = officialAntigravityMetadataPath({ binaryPath });
+  try {
+    const parsed = JSON.parse(await fs.readFile(metadataPath, 'utf8'));
+    return parsed?.version === PROVIDER_METADATA_VERSION ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+async function writeProviderMetadata(binaryPath, body) {
+  const metadataPath = officialAntigravityMetadataPath({ binaryPath });
+  await fs.mkdir(path.dirname(metadataPath), { recursive: true });
+  const temp = `${metadataPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  await fs.writeFile(temp, `${JSON.stringify({ version: PROVIDER_METADATA_VERSION, ...body }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+  await fs.rename(temp, metadataPath);
+  try { await fs.chmod(metadataPath, 0o600); } catch {}
+}
+
+async function finalizeProviderMetadata(binaryPath, providerVersion) {
+  const current = await readProviderMetadata(binaryPath);
+  if (!current) return;
+  await writeProviderMetadata(binaryPath, {
+    ...current,
+    providerVersion: providerVersion || current.providerVersion || null,
+    binarySha256: await sha256File(binaryPath),
+    verifiedAt: new Date().toISOString()
+  });
+}
+
+export async function providerProvenanceStatus({ binaryPath = officialAntigravityBinaryPath() } = {}) {
+  if (!await fileExists(binaryPath)) return { status: 'missing', sourceUrl: null, providerVersion: null };
+  const metadata = await readProviderMetadata(binaryPath);
+  if (!metadata?.sourceUrl || !metadata.binarySha256) {
+    return { status: 'unrecorded', sourceUrl: metadata?.sourceUrl || null, providerVersion: metadata?.providerVersion || null };
+  }
+  const binarySha256 = await sha256File(binaryPath);
+  return {
+    status: binarySha256 === metadata.binarySha256 ? 'verified' : 'changed',
+    sourceUrl: metadata.sourceUrl,
+    providerVersion: metadata.providerVersion || null,
+    installerSha256: metadata.installerSha256 || null,
+    binarySha256,
+    recordedBinarySha256: metadata.binarySha256,
+    installedAt: metadata.installedAt || null,
+    verifiedAt: metadata.verifiedAt || null
+  };
 }
 
 async function captureExecutable(executable, args, { cwd = process.cwd(), env = process.env, signal, timeoutMs = null } = {}) {
@@ -129,6 +191,14 @@ export async function installOfficialAntigravityCli({
   if (!await fileExists(binaryPath)) {
     throw new Error(`Google Antigravity backend was not installed at ${binaryPath}.`);
   }
+  await writeProviderMetadata(binaryPath, {
+    sourceUrl: url,
+    installerSha256: sha256Text(script),
+    binarySha256: await sha256File(binaryPath),
+    providerVersion: null,
+    installedAt: new Date().toISOString(),
+    verifiedAt: null
+  });
   return binaryPath;
 }
 
@@ -170,8 +240,55 @@ export async function ensureOfficialAntigravityCli({
   const installed = await installImpl({ platform, binaryPath });
   const verified = await probeImpl({ binaryPath: installed });
   if (!verified.ready) throw new Error(`Installed Google Antigravity backend is not usable: ${installed}`);
+  await finalizeProviderMetadata(installed, verified.version);
   if (useCache) healthyBackendPaths.add(installed);
   return installed;
+}
+
+export async function updateOfficialAntigravityCli({
+  platform = process.platform,
+  env = process.env,
+  binaryPath = officialAntigravityBinaryPath({ platform, env }),
+  installImpl = installOfficialAntigravityCli,
+  probeImpl = probeOfficialAntigravityBinary
+} = {}) {
+  if (String(env.ANTIGRAVITY_CLI_BINARY || '').trim()) {
+    throw new Error('Provider update is disabled when ANTIGRAVITY_CLI_BINARY points to an externally managed backend.');
+  }
+
+  const metadataPath = officialAntigravityMetadataPath({ binaryPath });
+  const backupRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'agyc-provider-backup-'));
+  const backupBinary = path.join(backupRoot, path.basename(binaryPath));
+  const backupMetadata = path.join(backupRoot, 'provider.json');
+  const hadBinary = await fileExists(binaryPath);
+  const hadMetadata = await fileExists(metadataPath);
+  try {
+    if (hadBinary) await fs.copyFile(binaryPath, backupBinary);
+    if (hadMetadata) await fs.copyFile(metadataPath, backupMetadata);
+    healthyBackendPaths.delete(binaryPath);
+    await fs.rm(binaryPath, { force: true });
+    await fs.rm(metadataPath, { force: true });
+
+    const installed = await installImpl({ platform, binaryPath });
+    const verified = await probeImpl({ binaryPath: installed });
+    if (!verified.ready) throw new Error(`Updated Google Antigravity backend is not usable: ${installed}`);
+    await finalizeProviderMetadata(installed, verified.version);
+    healthyBackendPaths.add(installed);
+    return {
+      binaryPath: installed,
+      version: verified.version,
+      provenance: await providerProvenanceStatus({ binaryPath: installed })
+    };
+  } catch (error) {
+    await fs.mkdir(path.dirname(binaryPath), { recursive: true });
+    await fs.rm(binaryPath, { force: true });
+    await fs.rm(metadataPath, { force: true });
+    if (hadBinary) await fs.copyFile(backupBinary, binaryPath);
+    if (hadMetadata) await fs.copyFile(backupMetadata, metadataPath);
+    throw error;
+  } finally {
+    await fs.rm(backupRoot, { recursive: true, force: true });
+  }
 }
 
 export function parseAntigravityModels(text) {
@@ -664,7 +781,8 @@ export class GoogleAccountAgent {
     reasoning = 'auto',
     yes = false,
     history = [],
-    backend = {}
+    backend = {},
+    onActivity = () => {}
   }) {
     this.workspace = workspace;
     this.displayWorkspace = displayWorkspace || workspace;
@@ -676,6 +794,7 @@ export class GoogleAccountAgent {
     this.ensureBackend = backend.ensure || ensureOfficialAntigravityCli;
     this.captureBackend = backend.capture || captureExecutable;
     this.modelsLoader = backend.models || discoverOfficialAntigravityModels;
+    this.onActivity = typeof onActivity === 'function' ? onActivity : () => {};
   }
 
   setModel(model) {
@@ -698,6 +817,7 @@ export class GoogleAccountAgent {
 
   async prompt(text, { attachments = [], signal } = {}) {
     throwIfAborted(signal);
+    this.onActivity('Working');
     const binary = await this.ensureBackend();
     const effectiveModel = await resolveAntigravityModel(this.model, { modelsLoader: this.modelsLoader });
     const previousConversation = !this.conversationId && this.seedHistory.length

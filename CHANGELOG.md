@@ -20,7 +20,7 @@ Initial release candidate.
 - Persistent external preferences for model, reasoning, auth, and approval mode.
 - External project-scoped conversation history.
 - Image, PDF, text/code, DOCX, XLSX, and PPTX attachment support.
-- Plain transient `Working... Ns` and `Applying changes...` request activity lines.
+- Plain transient task-phase activity lines (`Preparing`, `Inspecting`, `Working`, `Checking`, `Applying changes`) with elapsed seconds, no spinner/design chrome, and automatic erasure before final output.
 - Ctrl+C cancellation propagation through provider requests, direct API calls, shell commands, and transactional publication.
 - Explicit `agyc init` / `init` command for opt-in `AGENTS.md` creation.
 - One-time automatic Windows npm PATH setup.
@@ -33,11 +33,17 @@ Initial release candidate.
 - Fixed Windows fresh-machine provider installation by passing the downloaded official `.cmd` installer to `cmd.exe` as discrete arguments instead of a nested quoted command string.
 - Strengthened direct API agent autonomy with a 60-step execution budget, transient model-request retries, head/tail-preserving compact tool-result context, enforced post-edit verification, stagnant-tool-loop detection/replanning, bounded large-file reads, and a compact `project_overview` tool for repository-scale tasks.
 - Strengthened Google subscription task instructions so the official Antigravity backend maps broad repositories, iterates after failed checks, and validates meaningful modifications before finalizing.
+- Added `agyc doctor` / `doctor` plain diagnostics for wrapper, Node/npm, workspace/state, command resolution, provider/account, provider provenance, and basic network health.
+- Added managed-provider provenance receipts with official installer URL plus installer/binary SHA-256 hashes, `provider` status, and `provider update` with post-install health validation and rollback. External provider overrides remain externally managed.
+- Added abnormal-termination recovery with external task checkpoints, preserved OS-temporary staging, `agyc resume` / `resume`, `task`, and `task clear`; resume refuses publication when the real project changed since the saved baseline.
+- Added structured native executable/argv execution for direct API mode, while keeping shell execution available only when shell syntax is needed.
+- Added atomic exact multi-file patch editing, validation-command discovery, and lightweight symbol-definition/reference navigation to the direct coding agent.
+- Added Windows/macOS/Linux GitHub Actions coverage on Node 20 and 22, with provider install and Windows PATH mutation explicitly disabled in CI.
 
 ### Safety and isolation
 
 - Real project files are unchanged until a request completes successfully.
-- Failed/canceled work is discarded; publication conflicts are refused.
+- Failed/canceled work is discarded; publication conflicts are refused. Only abnormal process termination may preserve a resumable external staged task, and resume revalidates the real-project baseline before publication.
 - `.git`, `.gemini`, `.agents`, and `node_modules` provider/runtime metadata is never published from staging.
 - Linked-worktree/submodule `.git` pointer files are replaced by isolated disposable staging Git metadata so commands cannot mutate the real external gitdir through the staging copy.
 - Conversation history, persistent preferences, credentials, and attachment staging remain outside projects by default.

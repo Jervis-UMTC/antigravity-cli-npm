@@ -154,6 +154,49 @@ test('commit refuses to overwrite an external concurrent change', async () => {
   }
 });
 
+test('an interrupted staging workspace can resume and publish only when the real baseline is unchanged', async () => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-stage-resume-'));
+  await fs.writeFile(path.join(workspace, 'app.txt'), 'before\n', 'utf8');
+  const first = await createStagingWorkspace(workspace);
+  let resumed = null;
+  try {
+    await first.begin();
+    await fs.writeFile(path.join(first.workspace, 'app.txt'), 'after crash\n', 'utf8');
+    const container = first.container;
+    await first.close({ preserve: true });
+
+    resumed = await createStagingWorkspace(workspace, { container });
+    await resumed.resume();
+    assert.equal(await fs.readFile(path.join(workspace, 'app.txt'), 'utf8'), 'before\n');
+    await resumed.commit();
+    assert.equal(await fs.readFile(path.join(workspace, 'app.txt'), 'utf8'), 'after crash\n');
+  } finally {
+    await resumed?.close().catch(() => {});
+    await fs.rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test('resume refuses to publish when the real project changed after interruption', async () => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-stage-resume-conflict-'));
+  await fs.writeFile(path.join(workspace, 'app.txt'), 'before\n', 'utf8');
+  const first = await createStagingWorkspace(workspace);
+  let resumed = null;
+  try {
+    await first.begin();
+    await fs.writeFile(path.join(first.workspace, 'app.txt'), 'staged\n', 'utf8');
+    const container = first.container;
+    await first.close({ preserve: true });
+    await fs.writeFile(path.join(workspace, 'app.txt'), 'external\n', 'utf8');
+
+    resumed = await createStagingWorkspace(workspace, { container });
+    await assert.rejects(() => resumed.resume(), (error) => error?.code === 'RESUME_CONFLICT');
+    assert.equal(await fs.readFile(path.join(workspace, 'app.txt'), 'utf8'), 'external\n');
+  } finally {
+    await resumed?.close().catch(() => {});
+    await fs.rm(workspace, { recursive: true, force: true });
+  }
+});
+
 test('cancellation before publication leaves the real project unchanged', async () => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-stage-cancel-'));
   await fs.writeFile(path.join(workspace, 'app.txt'), 'before\n', 'utf8');

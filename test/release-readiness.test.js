@@ -45,9 +45,17 @@ test('release metadata is explicit and production files include hardening module
   }
 
   assert.ok(pkg.files.includes('LICENSE'));
-  for (const file of ['LICENSE', 'src/settings.js', 'src/init.js', 'src/cancel.js', 'scripts/postinstall.js']) {
+  for (const file of ['LICENSE', 'src/settings.js', 'src/init.js', 'src/cancel.js', 'src/doctor.js', 'src/task-state.js', 'scripts/postinstall.js']) {
     await fs.access(path.join(ROOT, file));
   }
+
+  const workflow = await fs.readFile(path.join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
+  for (const runner of ['ubuntu-latest', 'macos-latest', 'windows-latest']) assert.match(workflow, new RegExp(runner));
+  assert.match(workflow, /node: \[20, 22\]/);
+  assert.match(workflow, /AGYC_SKIP_PROVIDER_INSTALL/);
+  assert.match(workflow, /AGYC_SKIP_PATH_SETUP/);
+  assert.match(pkg.scripts.check, /src\/doctor\.js/);
+  assert.match(pkg.scripts.check, /src\/task-state\.js/);
 });
 
 test('npm dry-run tarball contains runtime/license files and excludes tests/provider state', async () => {
@@ -65,7 +73,7 @@ test('npm dry-run tarball contains runtime/license files and excludes tests/prov
   const names = report.files.map((entry) => entry.path.replace(/\\/g, '/'));
   for (const required of [
     'LICENSE', 'README.md', 'CHANGELOG.md', 'bin/agy.js',
-    'src/cli.js', 'src/settings.js', 'src/init.js', 'src/cancel.js'
+    'src/cli.js', 'src/settings.js', 'src/init.js', 'src/cancel.js', 'src/doctor.js', 'src/task-state.js'
   ]) assert.ok(names.includes(required), `missing ${required}`);
   assert.equal(names.some((name) => name.startsWith('test/')), false);
   assert.equal(names.some((name) => /(^|\/)\.git(?:\/|$)/.test(name)), false);

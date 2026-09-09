@@ -46,6 +46,7 @@ export function shouldConfigureWindowsPath({
   env = process.env,
   packageRoot = PACKAGE_ROOT
 } = {}) {
+  if (/^(?:1|true|yes|on)$/i.test(String(envValue(env, 'AGYC_SKIP_PATH_SETUP') || '').trim())) return false;
   if (platform !== 'win32') return false;
   if (String(envValue(env, 'npm_config_global') || '').toLowerCase() === 'true') return true;
 

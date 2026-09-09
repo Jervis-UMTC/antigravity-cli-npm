@@ -1,10 +1,11 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { exec as execCallback } from 'node:child_process';
+import { exec as execCallback, execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 import { isCancellation, throwIfAborted } from './cancel.js';
 
 const exec = promisify(execCallback);
+const execFile = promisify(execFileCallback);
 const DEFAULT_IGNORES = new Set(['.git', 'node_modules', 'dist', 'build', '.next', 'coverage', '.cache']);
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_FILE_OUTPUT = 120_000;
@@ -51,6 +52,54 @@ async function createResolver(workspace) {
 
     return resolved;
   };
+}
+
+async function fileExists(file) {
+  try {
+    return (await fs.stat(file)).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function displayProcess(executable, argv) {
+  return [executable, ...argv].map((part) => /\s|"/.test(part) ? JSON.stringify(part) : part).join(' ');
+}
+
+async function discoverValidationChecks(root) {
+  const checks = [];
+  const add = (command, reason) => {
+    if (!checks.some((item) => item.command === command)) checks.push({ command, reason });
+  };
+
+  try {
+    const pkg = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8'));
+    const scripts = pkg.scripts || {};
+    for (const name of ['check', 'test', 'lint', 'typecheck', 'build']) {
+      if (scripts[name]) add(name === 'test' ? 'npm test' : `npm run ${name}`, `package.json script: ${name}`);
+    }
+  } catch {}
+
+  if (await fileExists(path.join(root, 'pyproject.toml')) || await fileExists(path.join(root, 'pytest.ini'))) {
+    add('python -m pytest', 'Python project');
+  }
+  if (await fileExists(path.join(root, 'Cargo.toml'))) add('cargo test', 'Cargo project');
+  if (await fileExists(path.join(root, 'go.mod'))) add('go test ./...', 'Go module');
+  if (await fileExists(path.join(root, 'pom.xml'))) add('mvn test', 'Maven project');
+  if (await fileExists(path.join(root, 'gradlew'))) add('./gradlew test', 'Gradle wrapper');
+  if (await fileExists(path.join(root, 'gradlew.bat'))) add('gradlew.bat test', 'Gradle wrapper');
+  try {
+    const makefile = await fs.readFile(path.join(root, 'Makefile'), 'utf8');
+    for (const target of ['test', 'check', 'lint']) {
+      if (new RegExp(`^${target}:`, 'm').test(makefile)) add(`make ${target}`, `Makefile target: ${target}`);
+    }
+  } catch {}
+
+  return checks;
 }
 
 async function walkFiles(root, start, limit = 2000) {
@@ -104,6 +153,7 @@ export async function createTools({ workspace, approveCommand = async () => fals
         .map(([ext, count]) => `${ext}:${count}`)
         .join(', ');
 
+      const validationChecks = await discoverValidationChecks(root);
       let packageInfo = '';
       try {
         const pkg = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8'));
@@ -129,6 +179,7 @@ export async function createTools({ workspace, approveCommand = async () => fals
         `common file types: ${commonTypes || '(none)'}`,
         packageInfo,
         `git:\n${git}`,
+        `recommended checks:\n${validationChecks.length ? validationChecks.map((item) => `- ${item.command}`).join('\n') : '(none discovered)'}`,
         `top level:\n${topLevel.join('\n') || '(empty)'}`
       ].filter(Boolean).join('\n\n'), 20_000);
     },
@@ -152,6 +203,69 @@ export async function createTools({ workspace, approveCommand = async () => fals
       const end = Math.min(Number(args.end_line) || lines.length, lines.length);
       const rendered = lines.slice(start, end).map((line, index) => `${start + index + 1}: ${line}`).join('\n');
       return clip(rendered, MAX_FILE_OUTPUT, '...[file read truncated; use start_line/end_line to request a narrower range]');
+    },
+
+    async discover_checks() {
+      const checks = await discoverValidationChecks(root);
+      return checks.length
+        ? checks.map((item) => `${item.command} — ${item.reason}`).join('\n')
+        : '(no standard validation commands discovered; inspect project instructions/manifests)';
+    },
+
+    async find_symbol(args) {
+      const name = String(args.name || '').trim();
+      if (!name) throw new Error('Symbol name cannot be empty.');
+      const start = await resolveSafe(args.path || '.');
+      const maxResults = Math.min(Math.max(Number(args.max_results) || 50, 1), 200);
+      const escaped = escapeRegex(name);
+      const patterns = [
+        new RegExp(`\\b(?:export\\s+)?(?:async\\s+)?(?:function|class|interface|type|enum|const|let|var|def|fn|struct|trait|record|module)\\s+${escaped}\\b`),
+        new RegExp(`\\b${escaped}\\s*[:=]\\s*(?:async\\s*)?(?:function\\b|\\([^\\n]*\\)\\s*=>)`)
+      ];
+      const entries = await walkFiles(root, start, 5000);
+      const results = [];
+      for (const { absolute, relative, entry } of entries) {
+        if (!entry.isFile()) continue;
+        let stat;
+        try { stat = await fs.stat(absolute); } catch { continue; }
+        if (stat.size > MAX_FILE_BYTES) continue;
+        let text;
+        try { text = await fs.readFile(absolute, 'utf8'); } catch { continue; }
+        const lines = text.split(/\r?\n/);
+        for (let index = 0; index < lines.length; index += 1) {
+          if (patterns.some((pattern) => pattern.test(lines[index]))) {
+            results.push(`${relative}:${index + 1}: ${lines[index]}`);
+            if (results.length >= maxResults) return results.join('\n');
+          }
+        }
+      }
+      return results.join('\n') || '(no symbol definitions found)';
+    },
+
+    async find_references(args) {
+      const name = String(args.name || '').trim();
+      if (!name) throw new Error('Reference name cannot be empty.');
+      const start = await resolveSafe(args.path || '.');
+      const maxResults = Math.min(Math.max(Number(args.max_results) || 100, 1), 500);
+      const matcher = new RegExp(`\\b${escapeRegex(name)}\\b`);
+      const entries = await walkFiles(root, start, 5000);
+      const results = [];
+      for (const { absolute, relative, entry } of entries) {
+        if (!entry.isFile()) continue;
+        let stat;
+        try { stat = await fs.stat(absolute); } catch { continue; }
+        if (stat.size > MAX_FILE_BYTES) continue;
+        let text;
+        try { text = await fs.readFile(absolute, 'utf8'); } catch { continue; }
+        const lines = text.split(/\r?\n/);
+        for (let index = 0; index < lines.length; index += 1) {
+          if (matcher.test(lines[index])) {
+            results.push(`${relative}:${index + 1}: ${lines[index]}`);
+            if (results.length >= maxResults) return results.join('\n');
+          }
+        }
+      }
+      return results.join('\n') || '(no references found)';
     },
 
     async write_file(args) {
@@ -180,6 +294,45 @@ export async function createTools({ workspace, approveCommand = async () => fals
       const updated = text.slice(0, index) + newText + text.slice(index + oldText.length);
       await fs.writeFile(file, updated, 'utf8');
       return `Updated ${path.relative(root, file)}.`;
+    },
+
+    async apply_patch(args) {
+      const changes = Array.isArray(args.changes) ? args.changes : [];
+      if (!changes.length) throw new Error('changes must contain at least one patch hunk.');
+      if (changes.length > 50) throw new Error('A patch may contain at most 50 hunks.');
+
+      const originals = new Map();
+      const updated = new Map();
+      for (const change of changes) {
+        const file = await resolveSafe(change.path);
+        const oldText = String(change.old_text ?? '');
+        if (!oldText) throw new Error('Patch old_text cannot be empty. Use write_file for new files.');
+        const newText = String(change.new_text ?? '');
+        const occurrence = Math.max(Number(change.occurrence) || 1, 1);
+        let text = updated.get(file);
+        if (text === undefined) {
+          text = await fs.readFile(file, 'utf8');
+          originals.set(file, text);
+        }
+        let from = 0;
+        let index = -1;
+        for (let count = 0; count < occurrence; count += 1) {
+          index = text.indexOf(oldText, from);
+          if (index < 0) throw new Error(`Could not find occurrence ${occurrence} of patch old_text in ${path.relative(root, file)}.`);
+          from = index + oldText.length;
+        }
+        updated.set(file, text.slice(0, index) + newText + text.slice(index + oldText.length));
+      }
+
+      try {
+        for (const [file, text] of updated) await fs.writeFile(file, text, 'utf8');
+      } catch (error) {
+        for (const [file, text] of originals) {
+          try { await fs.writeFile(file, text, 'utf8'); } catch {}
+        }
+        throw error;
+      }
+      return `Applied ${changes.length} patch hunk${changes.length === 1 ? '' : 's'} across ${updated.size} file${updated.size === 1 ? '' : 's'}.`;
     },
 
     async delete_path(args) {
@@ -235,6 +388,40 @@ export async function createTools({ workspace, approveCommand = async () => fals
       }
 
       return results.join('\n') || '(no matches)';
+    },
+
+    async run_process(args, context = {}) {
+      throwIfAborted(context.signal);
+      const executable = String(args.executable || '').trim();
+      if (!executable) throw new Error('Executable cannot be empty.');
+      if (process.platform === 'win32' && /\.(?:cmd|bat)$/i.test(executable)) {
+        throw new Error('run_process accepts native executables on Windows. Use run_command for .cmd/.bat scripts or invoke cmd.exe explicitly.');
+      }
+      const argv = Array.isArray(args.args) ? args.args.map((item) => String(item)) : [];
+      if (argv.length > 100) throw new Error('run_process accepts at most 100 arguments.');
+      const cwd = await resolveSafe(args.cwd || '.');
+      const shown = displayProcess(executable, argv);
+      const approved = await approveCommand(shown, path.relative(root, cwd) || '.');
+      if (!approved) return 'Command denied by user.';
+      const timeout = Math.min(Math.max(Number(args.timeout_ms) || 120000, 1000), 900000);
+      try {
+        const { stdout, stderr } = await execFile(executable, argv, {
+          cwd,
+          timeout,
+          windowsHide: true,
+          maxBuffer: 2 * 1024 * 1024,
+          env: process.env,
+          signal: context.signal
+        });
+        const output = [stdout, stderr].filter(Boolean).join('');
+        return clip(output || '(process completed with no output)');
+      } catch (error) {
+        if (isCancellation(error) || context.signal?.aborted) throw error;
+        const stdout = error.stdout ? String(error.stdout) : '';
+        const stderr = error.stderr ? String(error.stderr) : '';
+        const details = [stdout, stderr, error.message].filter(Boolean).join('\n');
+        return `Command failed.\n${clip(details)}`;
+      }
     },
 
     async run_command(args, context = {}) {
