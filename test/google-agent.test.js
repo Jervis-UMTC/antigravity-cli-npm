@@ -676,6 +676,39 @@ test('GoogleAccountAgent marks provider authentication failures for automatic CL
   );
 });
 
+test('GoogleAccountAgent recognizes structured authentication errors even when the provider exits successfully', async () => {
+  const agent = new GoogleAccountAgent({
+    workspace: path.join('C:\\tmp', 'stage'),
+    displayWorkspace: path.join('C:\\project'),
+    model: 'gemini-3.8-flash',
+    backend: {
+      ensure: async () => 'official-agy',
+      models: async () => ['gemini-3.8-flash'],
+      capture: async () => ({
+        code: 0,
+        stdout: JSON.stringify({ status: 'ERROR', error: { message: 'Authentication required. Please sign in.' }, response: '' }),
+        stderr: ''
+      })
+    }
+  });
+
+  await assert.rejects(
+    () => agent.prompt('test request'),
+    (error) => error?.code === 'GOOGLE_AUTH_REQUIRED' && /reopen automatically/i.test(error.message)
+  );
+});
+
+test('Antigravity JSON parser accepts case-insensitive success status and preserves structured error messages', () => {
+  assert.deepEqual(
+    parseAntigravityJson('{"status":"success","response":"done"}'),
+    { response: 'done', conversationId: null }
+  );
+  assert.throws(
+    () => parseAntigravityJson('{"status":"ERROR","error":{"message":"Authentication required"},"response":""}'),
+    /Authentication required/
+  );
+});
+
 test('API-key model discovery uses the provider list endpoint and generateContent capability', async () => {
   let requested = null;
   const models = await discoverApiModels({

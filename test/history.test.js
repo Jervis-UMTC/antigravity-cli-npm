@@ -34,6 +34,33 @@ test('conversation history is stored outside the project and survives reload', a
   }
 });
 
+test('invalid conversation history is quarantined and a fresh session can continue', async () => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-history-corrupt-project-'));
+  const stateRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-history-corrupt-state-'));
+  try {
+    const store = await createHistoryStore(workspace, { baseDir: stateRoot });
+    await fs.mkdir(path.dirname(store.path), { recursive: true });
+    await fs.writeFile(store.path, '{"messages":[', 'utf8');
+
+    assert.deepEqual(await store.load(), []);
+    const notice = store.takeRecoveryNotice();
+    assert.match(notice, /Conversation history was invalid and was moved to/);
+    assert.equal(store.takeRecoveryNotice(), null);
+    await assert.rejects(() => fs.stat(store.path), { code: 'ENOENT' });
+
+    const entries = await fs.readdir(path.dirname(store.path));
+    const backup = entries.find((entry) => entry.startsWith(`${path.basename(store.path)}.invalid-`));
+    assert.ok(backup);
+    assert.equal(await fs.readFile(path.join(path.dirname(store.path), backup), 'utf8'), '{"messages":[');
+
+    await store.save(appendConversationTurn([], 'continue', [], 'ok'));
+    assert.equal((await store.load()).length, 2);
+  } finally {
+    await fs.rm(workspace, { recursive: true, force: true });
+    await fs.rm(stateRoot, { recursive: true, force: true });
+  }
+});
+
 test('long conversation history stays bounded by count and model-facing size', async () => {
   let messages = [];
   for (let index = 0; index < 180; index += 1) {

@@ -13,7 +13,10 @@ const MAX_COMMAND_OUTPUT = 80_000;
 
 function clip(text, max = MAX_COMMAND_OUTPUT, suffix = null) {
   if (text.length <= max) return text;
-  return `${text.slice(0, max)}\n${suffix || `...[truncated ${text.length - max} chars]`}`;
+  if (suffix) return `${text.slice(0, max)}\n${suffix}`;
+  const tailChars = Math.floor(max / 3);
+  const headChars = max - tailChars;
+  return `${text.slice(0, headChars)}\n...[truncated ${text.length - max} chars; showing final output below]...\n${text.slice(-tailChars)}`;
 }
 
 function inside(root, candidate) {

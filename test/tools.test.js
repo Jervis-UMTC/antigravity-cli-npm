@@ -140,3 +140,20 @@ test('aborted tool execution does not start a shell command', async () => {
     await fs.rm(workspace, { recursive: true, force: true });
   }
 });
+
+test('long command output preserves both the beginning and failure summary at the end', async () => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-tools-long-output-'));
+  try {
+    const tools = await createTools({ workspace, approveCommand: async () => true });
+    const result = await tools.execute('run_process', {
+      executable: process.execPath,
+      args: ['-e', 'process.stdout.write("BEGIN\\n" + "x".repeat(100000) + "\\nFINAL_FAILURE_SUMMARY\\n")']
+    });
+    assert.match(result, /^BEGIN/);
+    assert.match(result, /truncated \d+ chars; showing final output below/);
+    assert.match(result, /FINAL_FAILURE_SUMMARY\s*$/);
+    assert.ok(result.length < 81_000);
+  } finally {
+    await fs.rm(workspace, { recursive: true, force: true });
+  }
+});

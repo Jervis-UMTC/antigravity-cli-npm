@@ -3,6 +3,8 @@ import path from 'node:path';
 import { strFromU8, unzipSync } from 'fflate';
 
 const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+const MAX_DIRECT_TEXT_CHARS = 80_000;
+const MAX_DIRECT_INLINE_BINARY_BYTES = 14 * 1024 * 1024;
 const MAX_OFFICE_UNCOMPRESSED_BYTES = 50 * 1024 * 1024;
 const MAX_OFFICE_TEXT_CHARS = 500_000;
 const MAX_ZIP_ENTRIES = 5000;
@@ -271,9 +273,30 @@ export async function resolveAttachment(value, workspace) {
   };
 }
 
-export async function directAttachmentParts(attachments = []) {
+export async function directAttachmentParts(attachments = [], { maxTextChars = MAX_DIRECT_TEXT_CHARS } = {}) {
   const parts = [];
   let totalBytes = 0;
+  let totalTextChars = 0;
+  let inlineBinaryBytes = 0;
+  const textLimit = Math.min(Math.max(Number(maxTextChars) || 0, 0), MAX_DIRECT_TEXT_CHARS);
+
+  const boundedText = (text, name) => {
+    const value = String(text || '');
+    const remaining = textLimit - totalTextChars;
+    if (remaining <= 0) {
+      return `[Attachment ${name} omitted from direct inline context because the combined text-attachment limit was reached. Use a smaller attachment set or Google subscription mode to read the complete files.]`;
+    }
+    if (value.length <= remaining) {
+      totalTextChars += value.length;
+      return value;
+    }
+    const marker = `\n[Attachment ${name} truncated ${value.length - remaining} characters for direct API context. Use a smaller attachment or Google subscription mode if omitted details are required.]\n`;
+    const available = Math.max(0, remaining - marker.length);
+    const tailChars = Math.floor(available / 3);
+    const headChars = available - tailChars;
+    totalTextChars = textLimit;
+    return `${value.slice(0, headChars)}${marker}${value.slice(-tailChars)}`;
+  };
 
   for (const attachment of attachments) {
     const file = attachment.stagedPath || attachment.sourcePath;
@@ -284,16 +307,21 @@ export async function directAttachmentParts(attachments = []) {
 
     if (attachment.kind === 'office') {
       const text = await extractOfficeText(attachment.sourcePath, path.extname(attachment.sourcePath).toLowerCase());
-      parts.push({ text: `\nAttachment: ${attachment.name}\n${text}` });
+      parts.push({ text: `\nAttachment: ${attachment.name}\n${boundedText(text, attachment.name)}` });
       continue;
     }
 
     if (attachmentIsText(attachment)) {
       const text = await fs.readFile(file, 'utf8');
-      parts.push({ text: `\nAttachment: ${attachment.name}\n${text}` });
+      parts.push({ text: `\nAttachment: ${attachment.name}\n${boundedText(text, attachment.name)}` });
       continue;
     }
 
+    const size = attachment.size || (await fs.stat(file)).size;
+    inlineBinaryBytes += size;
+    if (inlineBinaryBytes > MAX_DIRECT_INLINE_BINARY_BYTES) {
+      throw new Error(`Combined PDF/image attachments are too large for direct API inline mode. Keep them under ${MAX_DIRECT_INLINE_BINARY_BYTES / (1024 * 1024)} MB total or use Google subscription mode.`);
+    }
     const data = await fs.readFile(file);
     parts.push({
       inlineData: {

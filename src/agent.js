@@ -9,6 +9,8 @@ const MAX_STEPS = 120;
 const MAX_TOOL_RESULT_CHARS = 24_000;
 const MAX_REQUEST_CONTEXT_CHARS = 120_000;
 const CONTEXT_RETRY_CHARS = 60_000;
+const MAX_DIRECT_PROMPT_CHARS = 50_000;
+const MAX_CURRENT_TURN_TEXT_CHARS = 110_000;
 const MAX_MODEL_RETRIES = 3;
 const STAGNATION_NUDGE_AFTER = 3;
 const STAGNATION_FAIL_AFTER = 6;
@@ -417,7 +419,13 @@ export class CodingAgent {
   async prompt(text, { attachments = [], signal } = {}) {
     const checkpoint = this.history.length;
     throwIfAborted(signal);
-    const parts = [{ text }, ...await directAttachmentParts(attachments)];
+    const promptText = String(text ?? '');
+    if (promptText.length > MAX_DIRECT_PROMPT_CHARS) {
+      throw new Error(`Current request is too large for direct API mode (${promptText.length} characters). Keep the request under ${MAX_DIRECT_PROMPT_CHARS} characters, attach the material as smaller files, or use Google subscription mode.`);
+    }
+    const parts = [{ text: promptText }, ...await directAttachmentParts(attachments, {
+      maxTextChars: Math.max(0, MAX_CURRENT_TURN_TEXT_CHARS - promptText.length)
+    })];
     this.history.push({ role: 'user', parts });
 
     try {

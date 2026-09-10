@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import { CodingAgent, resolveApiModel } from '../src/agent.js';
 
@@ -353,7 +356,7 @@ test('direct API compacts old tool exchanges during very long autonomous tasks',
       const body = JSON.parse(options.body);
       requestContents.push(body.contents);
       calls += 1;
-      const parts = calls <= 10
+      const parts = calls <= 75
         ? [{ functionCall: { name: 'run_command', args: { command: `check-${calls}` } } }]
         : [{ text: 'Long task completed.\n\nSummary\nCompleted.' }];
       return { ok: true, status: 200, async json() { return { candidates: [{ content: { role: 'model', parts } }] }; } };
@@ -362,7 +365,7 @@ test('direct API compacts old tool exchanges during very long autonomous tasks',
 
   const answer = await agent.prompt('perform a long multi-step inspection');
   assert.match(answer, /Long task completed/);
-  assert.equal(calls, 11);
+  assert.equal(calls, 76);
   assert.ok(requestContents.some((contents) => JSON.stringify(contents).includes('Earlier conversation or tool activity was compacted')));
   assert.ok(Math.max(...requestContents.map((contents) => JSON.stringify(contents).length)) < 140_000);
 
@@ -415,4 +418,59 @@ test('direct API retries an explicit provider context-limit error with a smaller
   assert.equal(calls, 2);
   assert.ok(sizes[1] < sizes[0]);
   assert.ok(sizes[1] < 70_000);
+});
+
+test('direct API rejects a single oversized current prompt before sending it to the provider', async () => {
+  let calls = 0;
+  const agent = new CodingAgent({
+    workspace: process.cwd(),
+    displayWorkspace: process.cwd(),
+    apiKey: 'test-key',
+    model: 'gemini-3.8-flash',
+    tools: { execute: async () => 'ok' },
+    fetchImpl: async () => { calls += 1; throw new Error('should not send'); }
+  });
+
+  await assert.rejects(
+    () => agent.prompt('x'.repeat(50_001)),
+    /Current request is too large for direct API mode/
+  );
+  assert.equal(calls, 0);
+});
+
+test('direct API bounds combined current prompt and text attachment content', async () => {
+  let sent = null;
+  const attachmentText = `BEGIN-${'a'.repeat(90_000)}-END`;
+  const agent = new CodingAgent({
+    workspace: process.cwd(),
+    displayWorkspace: process.cwd(),
+    apiKey: 'test-key',
+    model: 'gemini-3.8-flash',
+    tools: { execute: async () => 'ok' },
+    fetchImpl: async (_url, options) => {
+      const body = JSON.parse(options.body);
+      sent = body.contents.at(-1);
+      return { ok: true, status: 200, async json() { return { candidates: [{ content: { role: 'model', parts: [{ text: 'ok' }] } }] }; } };
+    }
+  });
+
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-agent-current-turn-'));
+  try {
+    const file = path.join(temp, 'large.txt');
+    await fs.writeFile(file, attachmentText, 'utf8');
+    await agent.prompt('p'.repeat(45_000), { attachments: [{
+      sourcePath: file,
+      stagedPath: file,
+      name: 'large.txt',
+      mimeType: 'text/plain',
+      kind: 'text',
+      size: Buffer.byteLength(attachmentText)
+    }] });
+    const sentText = sent.parts.filter((part) => typeof part.text === 'string').map((part) => part.text).join('');
+    assert.ok(sentText.length < 112_000);
+    assert.match(sentText, /BEGIN-/);
+    assert.match(sentText, /-END$/);
+  } finally {
+    await fs.rm(temp, { recursive: true, force: true });
+  }
 });

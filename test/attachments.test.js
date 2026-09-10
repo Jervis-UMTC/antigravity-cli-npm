@@ -114,3 +114,34 @@ test('malformed or implausibly expanding Office ZIPs are rejected instead of dec
     await fs.rm(workspace, { recursive: true, force: true });
   }
 });
+
+test('direct API bounds large text attachments while preserving their beginning and end', async () => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-attachment-large-text-'));
+  try {
+    const file = path.join(workspace, 'large.txt');
+    await fs.writeFile(file, `BEGIN-${'x'.repeat(120_000)}-END`, 'utf8');
+    const attachment = await resolveAttachment(file, workspace);
+    const [part] = await directAttachmentParts([attachment]);
+    assert.match(part.text, /BEGIN-/);
+    assert.match(part.text, /truncated \d+ characters for direct API context/);
+    assert.match(part.text, /-END$/);
+    assert.ok(part.text.length < 82_000);
+  } finally {
+    await fs.rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test('direct API rejects oversized inline binary attachments before base64 expansion', async () => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-attachment-large-binary-'));
+  try {
+    const file = path.join(workspace, 'large.pdf');
+    await fs.writeFile(file, Buffer.alloc(15 * 1024 * 1024, 1));
+    const attachment = await resolveAttachment(file, workspace);
+    await assert.rejects(
+      () => directAttachmentParts([attachment]),
+      /Combined PDF\/image attachments are too large for direct API inline mode/
+    );
+  } finally {
+    await fs.rm(workspace, { recursive: true, force: true });
+  }
+});

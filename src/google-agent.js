@@ -642,15 +642,32 @@ export function parseAntigravityJson(text) {
   } catch {
     throw new Error(`Google Antigravity returned invalid JSON: ${trimmed.slice(0, 500)}`);
   }
-  if (body.status && body.status !== 'SUCCESS') {
-    throw new Error(body.error || `Google Antigravity request ended with status ${body.status}.`);
+  const errorDetail = typeof body.error === 'string'
+    ? body.error
+    : typeof body.error?.message === 'string'
+      ? body.error.message
+      : body.error
+        ? JSON.stringify(body.error)
+        : '';
+  if (body.status && String(body.status).toUpperCase() !== 'SUCCESS') {
+    throw new Error(errorDetail || `Google Antigravity request ended with status ${body.status}.`);
   }
-  if (body.error) throw new Error(typeof body.error === 'string' ? body.error : JSON.stringify(body.error));
+  if (body.error) throw new Error(errorDetail);
   if (typeof body.response !== 'string') throw new Error('Google Antigravity response did not contain response text.');
   return {
     response: body.response.trim(),
     conversationId: typeof body.conversation_id === 'string' && body.conversation_id ? body.conversation_id : null
   };
+}
+
+function isGoogleAuthFailure(value) {
+  return /auth(?:entication)? required|not authenticated|sign.?in|log.?in|credential/i.test(String(value || ''));
+}
+
+function googleAuthRequiredError() {
+  const error = new Error('Google subscription session became unavailable. Retry the request; official Antigravity sign-in will reopen automatically if needed.');
+  error.code = 'GOOGLE_AUTH_REQUIRED';
+  return error;
 }
 
 export async function resolveAntigravityModel(model, {
@@ -853,15 +870,17 @@ export class GoogleAccountAgent {
         structuredError = typeof body.error === 'string' ? body.error : '';
       } catch {}
       const detail = (structuredError || result.stderr || result.stdout || '').trim();
-      if (/auth(?:entication)? required|not authenticated|sign.?in|log.?in|credential/i.test(detail)) {
-        const error = new Error('Google subscription session became unavailable. Retry the request; official Antigravity sign-in will reopen automatically if needed.');
-        error.code = 'GOOGLE_AUTH_REQUIRED';
-        throw error;
-      }
+      if (isGoogleAuthFailure(detail)) throw googleAuthRequiredError();
       throw new Error(`Google subscription request failed${detail ? `: ${detail}` : '.'}`);
     }
 
-    let parsed = parseAntigravityJson(result.stdout);
+    let parsed;
+    try {
+      parsed = parseAntigravityJson(result.stdout);
+    } catch (error) {
+      if (isGoogleAuthFailure(error?.message)) throw googleAuthRequiredError();
+      throw error;
+    }
     this.conversationId = parsed.conversationId || this.conversationId;
     if (!parsed.response && this.conversationId) {
       const recoveryArgs = buildAntigravityArgs({
@@ -878,9 +897,15 @@ export class GoogleAccountAgent {
       });
       if (recovery.code !== 0) {
         const detail = String(recovery.stderr || recovery.stdout || '').trim();
+        if (isGoogleAuthFailure(detail)) throw googleAuthRequiredError();
         throw new Error(`Google Antigravity returned an empty final response and response recovery failed${detail ? `: ${detail}` : '.'}`);
       }
-      parsed = parseAntigravityJson(recovery.stdout);
+      try {
+        parsed = parseAntigravityJson(recovery.stdout);
+      } catch (error) {
+        if (isGoogleAuthFailure(error?.message)) throw googleAuthRequiredError();
+        throw error;
+      }
       this.conversationId = parsed.conversationId || this.conversationId;
     }
     if (!parsed.response) {

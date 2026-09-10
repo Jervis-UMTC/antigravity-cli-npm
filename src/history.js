@@ -53,15 +53,26 @@ async function writeJsonAtomic(file, body) {
 export async function createHistoryStore(workspace, { baseDir } = {}) {
   const root = path.resolve(baseDir || process.env.ANTIGRAVITY_HOME || path.join(os.homedir(), '.antigravity-cli'));
   const file = path.join(root, 'history', `${projectKey(workspace)}.json`);
+  let recoveryNotice = null;
 
   async function load() {
+    recoveryNotice = null;
     try {
       const raw = await fs.readFile(file, 'utf8');
       const parsed = JSON.parse(raw);
       return normalizeMessages(parsed.messages);
     } catch (error) {
       if (error?.code === 'ENOENT') return [];
-      if (error instanceof SyntaxError) throw new Error(`Conversation history is invalid: ${file}`);
+      if (error instanceof SyntaxError) {
+        const backup = `${file}.invalid-${Date.now()}-${crypto.randomUUID()}`;
+        try {
+          await fs.rename(file, backup);
+        } catch (backupError) {
+          throw new Error(`Conversation history is invalid and could not be quarantined: ${file}: ${backupError instanceof Error ? backupError.message : String(backupError)}`);
+        }
+        recoveryNotice = `Conversation history was invalid and was moved to ${backup}. Continuing with a fresh history.`;
+        return [];
+      }
       throw error;
     }
   }
@@ -83,6 +94,11 @@ export async function createHistoryStore(workspace, { baseDir } = {}) {
     path: file,
     load,
     save,
+    takeRecoveryNotice() {
+      const notice = recoveryNotice;
+      recoveryNotice = null;
+      return notice;
+    },
     async clear() {
       await fs.rm(file, { force: true });
     }
