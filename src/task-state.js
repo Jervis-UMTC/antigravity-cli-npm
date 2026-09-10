@@ -8,6 +8,10 @@ function canonicalWorkspace(workspace) {
   return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
 }
 
+function sameWorkspace(left, right) {
+  return canonicalWorkspace(left) === canonicalWorkspace(right);
+}
+
 function projectKey(workspace) {
   return crypto.createHash('sha256').update(canonicalWorkspace(workspace)).digest('hex').slice(0, 32);
 }
@@ -47,11 +51,22 @@ function normalizeAttachments(items, container) {
   });
 }
 
-async function writeJsonAtomic(file, body) {
+async function writeJsonExclusive(file, body) {
   await fs.mkdir(path.dirname(file), { recursive: true });
   const temp = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}.${crypto.randomUUID()}.tmp`);
   await fs.writeFile(temp, `${JSON.stringify(body, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-  await fs.rename(temp, file);
+  try {
+    await fs.link(temp, file);
+  } catch (error) {
+    if (error?.code === 'EEXIST') {
+      const conflict = new Error('Another antigyc task is already active or waiting to be resumed in this project.');
+      conflict.code = 'TASK_ALREADY_ACTIVE';
+      throw conflict;
+    }
+    throw error;
+  } finally {
+    await fs.rm(temp, { force: true });
+  }
   try { await fs.chmod(file, 0o600); } catch {}
 }
 
@@ -66,12 +81,22 @@ export async function createTaskStore(workspace, options = {}) {
       if (parsed?.version !== 1 || typeof parsed.prompt !== 'string' || !parsed.prompt.trim()) {
         throw new Error(`Interrupted task state is invalid: ${file}`);
       }
-      if (path.resolve(String(parsed.workspace || '')) !== resolvedWorkspace) {
+      if (!sameWorkspace(String(parsed.workspace || ''), resolvedWorkspace)) {
         throw new Error(`Interrupted task belongs to a different workspace: ${file}`);
       }
       const container = path.resolve(String(parsed.container || ''));
       if (!isSafeTaskContainer(container, { tempRoot })) {
         throw new Error(`Interrupted task staging path is invalid: ${file}`);
+      }
+      try {
+        const stat = await fs.stat(container);
+        if (!stat.isDirectory()) throw new Error(`Interrupted task staging path is invalid: ${file}`);
+      } catch (error) {
+        if (error?.code === 'ENOENT') {
+          await fs.rm(file, { force: true });
+          return null;
+        }
+        throw error;
       }
       return {
         version: 1,
@@ -102,7 +127,7 @@ export async function createTaskStore(workspace, options = {}) {
       createdAt
     };
     if (!body.prompt) throw new Error('Interrupted task prompt cannot be empty.');
-    await writeJsonAtomic(file, body);
+    await writeJsonExclusive(file, body);
     return body;
   }
 

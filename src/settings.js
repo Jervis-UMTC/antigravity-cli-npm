@@ -80,6 +80,13 @@ export function mergeRuntimePreferences(parsed, stored = {}, env = process.env) 
   const envModel = String(env.ANTIGRAVITY_MODEL || '').trim();
   const envReasoning = String(env.ANTIGRAVITY_REASONING || '').trim();
 
+  if (envAuth && !VALID_AUTH.has(envAuth)) {
+    throw new Error('ANTIGRAVITY_AUTH must be auto, google, or api-key.');
+  }
+  if (envReasoning && !VALID_REASONING.has(envReasoning)) {
+    throw new Error('ANTIGRAVITY_REASONING must be auto, low, or high.');
+  }
+
   options.auth = options.auth || envAuth || stored.auth || 'google';
   options.model = options.model || envModel || stored.model || 'gemini-3.8-flash';
   options.reasoning = options.reasoning || envReasoning || stored.reasoning || 'auto';

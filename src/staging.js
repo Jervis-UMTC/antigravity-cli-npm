@@ -9,6 +9,8 @@ import { materializeAttachment } from './attachments.js';
 import { throwIfAborted } from './cancel.js';
 
 const APPLY_EXCLUDES = new Set(['.git', '.gemini', '.agents', 'node_modules']);
+const COPY_IGNORES = new Set(['.gemini', '.agents']);
+const DEPENDENCY_DIRS = new Set(['node_modules']);
 const execFile = promisify(execFileCallback);
 
 function depth(relative) {
@@ -20,6 +22,43 @@ function excluded(relative) {
     .split(path.sep)
     .filter(Boolean)
     .some((part) => APPLY_EXCLUDES.has(part));
+}
+
+function hasPathPart(relative, names) {
+  return relative
+    .split(path.sep)
+    .filter(Boolean)
+    .some((part) => names.has(part));
+}
+
+function inside(root, candidate) {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+async function assertSafeProjectLinks(root) {
+  const queue = [root];
+  while (queue.length) {
+    const directory = queue.shift();
+    const entries = await fs.readdir(directory, { withFileTypes: true });
+    for (const entry of entries) {
+      const absolute = path.join(directory, entry.name);
+      const relative = path.relative(root, absolute);
+      if (hasPathPart(relative, COPY_IGNORES) || hasPathPart(relative, DEPENDENCY_DIRS)) continue;
+      if (entry.isSymbolicLink()) {
+        const linkTarget = await fs.readlink(absolute);
+        if (process.platform === 'win32') {
+          throw new Error(`Project contains a symbolic link or junction that cannot be safely isolated on Windows: ${relative}`);
+        }
+        const resolvedTarget = path.resolve(path.dirname(absolute), linkTarget);
+        if (path.isAbsolute(linkTarget) || !inside(root, resolvedTarget)) {
+          throw new Error(`Project contains an absolute or external symbolic link that could escape transactional staging: ${relative}`);
+        }
+        continue;
+      }
+      if (entry.isDirectory()) queue.push(absolute);
+    }
+  }
 }
 
 async function lstatOrNull(target) {
@@ -88,11 +127,80 @@ async function clearDirectory(directory) {
   })));
 }
 
-async function copyDirectoryContents(source, destination) {
+async function copyDependencyTree(source, destination, realRoot, stageRoot) {
+  const links = [];
+
+  const copyFiles = async (sourceDirectory, destinationDirectory) => {
+    await fs.mkdir(destinationDirectory, { recursive: true });
+    const entries = await fs.readdir(sourceDirectory, { withFileTypes: true });
+    for (const entry of entries) {
+      const sourcePath = path.join(sourceDirectory, entry.name);
+      const destinationPath = path.join(destinationDirectory, entry.name);
+      if (entry.isSymbolicLink()) {
+        links.push({ sourcePath, destinationPath });
+        continue;
+      }
+      if (entry.isDirectory()) {
+        await copyFiles(sourcePath, destinationPath);
+        continue;
+      }
+      await fs.cp(sourcePath, destinationPath, {
+        force: true,
+        errorOnExist: false,
+        preserveTimestamps: true
+      });
+    }
+  };
+
+  await copyFiles(source, destination);
+
+  for (const { sourcePath, destinationPath } of links) {
+    const linkTarget = await fs.readlink(sourcePath);
+    const resolvedTarget = path.resolve(path.dirname(sourcePath), linkTarget);
+    if (!inside(realRoot, resolvedTarget)) {
+      throw new Error(`Dependency link escapes the project and cannot be isolated safely: ${path.relative(realRoot, sourcePath)}`);
+    }
+    const stagedTarget = path.join(stageRoot, path.relative(realRoot, resolvedTarget));
+    let targetStat;
+    try { targetStat = await fs.stat(sourcePath); } catch { targetStat = null; }
+    await fs.mkdir(path.dirname(destinationPath), { recursive: true });
+    if (process.platform === 'win32') {
+      if (targetStat?.isDirectory()) {
+        await fs.symlink(stagedTarget, destinationPath, 'junction');
+      } else {
+        try {
+          await fs.symlink(stagedTarget, destinationPath, 'file');
+        } catch (error) {
+          if (error?.code !== 'EPERM' && error?.code !== 'EACCES') throw error;
+          if (!targetStat?.isFile()) throw error;
+          await fs.copyFile(resolvedTarget, destinationPath);
+        }
+      }
+    } else {
+      const stagedLinkTarget = path.isAbsolute(linkTarget) ? stagedTarget : linkTarget;
+      await fs.symlink(stagedLinkTarget, destinationPath, targetStat?.isDirectory() ? 'dir' : 'file');
+    }
+  }
+}
+
+async function copyDirectoryContents(source, destination, relativeDirectory = '', realRoot = source, stageRoot = destination) {
   const entries = await fs.readdir(source, { withFileTypes: true });
   for (const entry of entries) {
-    await fs.cp(path.join(source, entry.name), path.join(destination, entry.name), {
-      recursive: true,
+    const relative = path.join(relativeDirectory, entry.name);
+    if (hasPathPart(relative, COPY_IGNORES)) continue;
+    const sourcePath = path.join(source, entry.name);
+    const destinationPath = path.join(destination, entry.name);
+    if (entry.name === 'node_modules') {
+      await copyDependencyTree(sourcePath, destinationPath, realRoot, stageRoot);
+      continue;
+    }
+    if (entry.isDirectory() && !entry.isSymbolicLink()) {
+      await fs.mkdir(destinationPath, { recursive: true });
+      await copyDirectoryContents(sourcePath, destinationPath, relative, realRoot, stageRoot);
+      continue;
+    }
+    await fs.cp(sourcePath, destinationPath, {
+      recursive: entry.isSymbolicLink(),
       force: true,
       errorOnExist: false,
       preserveTimestamps: true,
@@ -234,6 +342,7 @@ export async function createStagingWorkspace(realWorkspace, { container: resumeC
     workspace: stageRoot,
 
     async begin() {
+      await assertSafeProjectLinks(realRoot);
       for (let attempt = 0; attempt < 2; attempt += 1) {
         const before = await buildManifest(realRoot);
         await clearDirectory(stageRoot);
@@ -332,7 +441,10 @@ export async function createStagingWorkspace(realWorkspace, { container: resumeC
       }
 
       baseline = final;
-      await saveManifest(baselinePath, baseline);
+      // The real-project publication has already completed successfully.
+      // Refreshing the disposable resume manifest is only bookkeeping at
+      // this point and must not turn a successful commit into a false error.
+      try { await saveManifest(baselinePath, baseline); } catch {}
       return changes;
     },
 

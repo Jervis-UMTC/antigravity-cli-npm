@@ -38,3 +38,15 @@ test('CLI values override environment, environment overrides stored preferences'
   });
   assert.deepEqual(cli, { model: 'cli-model', reasoning: 'auto', auth: 'google', yes: false, turbo: false });
 });
+
+test('invalid authentication and reasoning environment values fail with configuration errors', () => {
+  const parsed = { auth: null, model: null, reasoning: null, turbo: null, yes: null };
+  assert.throws(
+    () => mergeRuntimePreferences(parsed, {}, { ANTIGRAVITY_AUTH: 'broken' }),
+    /ANTIGRAVITY_AUTH must be auto, google, or api-key/
+  );
+  assert.throws(
+    () => mergeRuntimePreferences(parsed, {}, { ANTIGRAVITY_REASONING: 'extreme' }),
+    /ANTIGRAVITY_REASONING must be auto, low, or high/
+  );
+});

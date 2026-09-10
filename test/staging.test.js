@@ -218,3 +218,134 @@ test('cancellation before publication leaves the real project unchanged', async 
     await fs.rm(workspace, { recursive: true, force: true });
   }
 });
+
+test('staging rejects project links that could escape the transactional copy', async (t) => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-stage-link-project-'));
+  const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-stage-link-outside-'));
+  await fs.writeFile(path.join(outside, 'sentinel.txt'), 'unchanged\n', 'utf8');
+  const link = path.join(workspace, 'external-link');
+  try {
+    try {
+      await fs.symlink(outside, link, process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (error) {
+      if (error?.code === 'EPERM' || error?.code === 'EACCES') {
+        t.skip('symbolic links are not available in this environment');
+        return;
+      }
+      throw error;
+    }
+    const staging = await createStagingWorkspace(workspace);
+    try {
+      await assert.rejects(
+        () => staging.begin(),
+        process.platform === 'win32'
+          ? /cannot be safely isolated on Windows/
+          : /could escape transactional staging/
+      );
+      assert.equal(await fs.readFile(path.join(outside, 'sentinel.txt'), 'utf8'), 'unchanged\n');
+    } finally {
+      await staging.close();
+    }
+  } finally {
+    await fs.rm(workspace, { recursive: true, force: true });
+    await fs.rm(outside, { recursive: true, force: true });
+  }
+});
+
+test('relative internal symbolic links remain inside staging on supported platforms', { skip: process.platform === 'win32' }, async () => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-stage-link-internal-'));
+  await fs.mkdir(path.join(workspace, 'target'));
+  await fs.writeFile(path.join(workspace, 'target', 'value.txt'), 'before\n', 'utf8');
+  await fs.symlink('target', path.join(workspace, 'alias'), 'dir');
+  const staging = await createStagingWorkspace(workspace);
+  try {
+    await staging.begin();
+    await fs.writeFile(path.join(staging.workspace, 'alias', 'value.txt'), 'staged\n', 'utf8');
+    assert.equal(await fs.readFile(path.join(workspace, 'target', 'value.txt'), 'utf8'), 'before\n');
+    assert.equal(await fs.readFile(path.join(staging.workspace, 'target', 'value.txt'), 'utf8'), 'staged\n');
+  } finally {
+    await staging.close();
+    await fs.rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test('internal dependency links are rewritten into the transactional staging copy', async (t) => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-stage-excluded-link-'));
+  try {
+    const target = path.join(workspace, 'node_modules', '.store', 'linked-package');
+    await fs.mkdir(target, { recursive: true });
+    await fs.writeFile(path.join(target, 'value.txt'), 'real\n', 'utf8');
+    try {
+      await fs.symlink(target, path.join(workspace, 'node_modules', 'linked-package'), process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (error) {
+      if (error?.code === 'EPERM' || error?.code === 'EACCES') {
+        t.skip('symbolic links are not available in this environment');
+        return;
+      }
+      throw error;
+    }
+    await fs.writeFile(path.join(workspace, 'app.txt'), 'before\n', 'utf8');
+    const staging = await createStagingWorkspace(workspace);
+    try {
+      await staging.begin();
+      assert.equal(await fs.readFile(path.join(staging.workspace, 'app.txt'), 'utf8'), 'before\n');
+      await fs.writeFile(path.join(staging.workspace, 'node_modules', 'linked-package', 'value.txt'), 'staged\n', 'utf8');
+      assert.equal(await fs.readFile(path.join(staging.workspace, 'node_modules', '.store', 'linked-package', 'value.txt'), 'utf8'), 'staged\n');
+      assert.equal(await fs.readFile(path.join(target, 'value.txt'), 'utf8'), 'real\n');
+    } finally {
+      await staging.close();
+    }
+  } finally {
+    await fs.rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test('external dependency links are rejected instead of pointing staged commands outside the project', async (t) => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-stage-dependency-escape-'));
+  const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-stage-dependency-outside-'));
+  try {
+    await fs.mkdir(path.join(workspace, 'node_modules'), { recursive: true });
+    try {
+      await fs.symlink(outside, path.join(workspace, 'node_modules', 'external-package'), process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (error) {
+      if (error?.code === 'EPERM' || error?.code === 'EACCES') {
+        t.skip('symbolic links are not available in this environment');
+        return;
+      }
+      throw error;
+    }
+    const staging = await createStagingWorkspace(workspace);
+    try {
+      await assert.rejects(() => staging.begin(), /Dependency link escapes the project/);
+    } finally {
+      await staging.close();
+    }
+  } finally {
+    await fs.rm(workspace, { recursive: true, force: true });
+    await fs.rm(outside, { recursive: true, force: true });
+  }
+});
+
+test('dependency link cycles are preserved as links without recursive copy expansion', { skip: process.platform === 'win32' }, async () => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-stage-dependency-cycle-'));
+  try {
+    const a = path.join(workspace, 'node_modules', '.store', 'a');
+    const b = path.join(workspace, 'node_modules', '.store', 'b');
+    await fs.mkdir(path.join(a, 'node_modules'), { recursive: true });
+    await fs.mkdir(path.join(b, 'node_modules'), { recursive: true });
+    await fs.writeFile(path.join(a, 'a.txt'), 'a\n', 'utf8');
+    await fs.writeFile(path.join(b, 'b.txt'), 'b\n', 'utf8');
+    await fs.symlink(path.relative(path.join(a, 'node_modules'), b), path.join(a, 'node_modules', 'b'), 'dir');
+    await fs.symlink(path.relative(path.join(b, 'node_modules'), a), path.join(b, 'node_modules', 'a'), 'dir');
+    const staging = await createStagingWorkspace(workspace);
+    try {
+      await staging.begin();
+      assert.equal(await fs.readFile(path.join(staging.workspace, 'node_modules', '.store', 'a', 'node_modules', 'b', 'b.txt'), 'utf8'), 'b\n');
+      assert.equal(await fs.readFile(path.join(staging.workspace, 'node_modules', '.store', 'b', 'node_modules', 'a', 'a.txt'), 'utf8'), 'a\n');
+    } finally {
+      await staging.close();
+    }
+  } finally {
+    await fs.rm(workspace, { recursive: true, force: true });
+  }
+});

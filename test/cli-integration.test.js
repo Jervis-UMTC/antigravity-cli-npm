@@ -7,6 +7,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { createGoogleAuthBootstrap, plainTerminalText, promptLabel } from '../src/cli.js';
+import { appendConversationTurn, createHistoryStore } from '../src/history.js';
 import { createStagingWorkspace } from '../src/staging.js';
 import { createTaskStore } from '../src/task-state.js';
 
@@ -124,6 +125,73 @@ function writeFileCall(file, content) {
 
 test('interactive prompt uses a minimal antigyc shell indicator', () => {
   assert.equal(promptLabel('C:\\projects\\my-app'), 'antigyc C:\\projects\\my-app> ');
+});
+
+test('one-shot CLI quarantines corrupt history and continues with a fresh saved turn', async () => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-cli-corrupt-history-project-'));
+  const stateRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-cli-corrupt-history-state-'));
+  const fake = await startFakeGemini(async () => modelText('Recovered session.\n\nSummary\nRecovered.'));
+  try {
+    const store = await createHistoryStore(workspace, { baseDir: stateRoot });
+    await fs.mkdir(path.dirname(store.path), { recursive: true });
+    await fs.writeFile(store.path, '{"messages":[', 'utf8');
+
+    const result = await runCli(workspace, stateRoot, fake.baseUrl, ['--turbo', '-p', 'continue after corrupt history']);
+    assert.equal(result.code, 0);
+    assert.match(result.stdout, /Conversation history was invalid and was moved to/);
+    assert.match(result.stdout, /Recovered session/);
+    assert.equal(result.stderr, '');
+
+    const saved = await store.load();
+    assert.equal(saved.length, 2);
+    assert.match(saved[0].text, /continue after corrupt history/);
+    assert.match(saved[1].text, /Recovered session/);
+  } finally {
+    await fake.close();
+    await fs.rm(workspace, { recursive: true, force: true });
+    await fs.rm(stateRoot, { recursive: true, force: true });
+  }
+});
+
+test('one-shot CLI keeps a very large persisted conversation within the model request budget', async () => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-cli-long-history-project-'));
+  const stateRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-cli-long-history-state-'));
+  let requestChars = 0;
+  let requestText = '';
+  const fake = await startFakeGemini(async (_index, body) => {
+    requestText = JSON.stringify(body.contents);
+    requestChars = requestText.length;
+    return modelText('Long history continued.\n\nSummary\nContinued.');
+  });
+  try {
+    const store = await createHistoryStore(workspace, { baseDir: stateRoot });
+    let history = [];
+    for (let index = 0; index < 100; index += 1) {
+      history = appendConversationTurn(
+        history,
+        `request-${index} ${'u'.repeat(12_000)}`,
+        [],
+        `reply-${index} ${'a'.repeat(12_000)}`
+      );
+    }
+    await store.save(history);
+
+    const result = await runCli(workspace, stateRoot, fake.baseUrl, ['--turbo', '-p', 'continue this long conversation']);
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /Long history continued/);
+    assert.ok(requestChars < 70_000);
+    assert.match(requestText, /request-99/);
+    assert.doesNotMatch(requestText, /request-0\b/);
+
+    const saved = await store.load();
+    assert.equal(saved.length, 200);
+    assert.match(saved.at(-2).text, /continue this long conversation/);
+    assert.match(saved.at(-1).text, /Long history continued/);
+  } finally {
+    await fake.close();
+    await fs.rm(workspace, { recursive: true, force: true });
+    await fs.rm(stateRoot, { recursive: true, force: true });
+  }
 });
 
 test('terminal response rendering removes Markdown syntax without corrupting fenced code', () => {
@@ -461,6 +529,26 @@ test('a new task is blocked while an interrupted staged task is waiting for resu
   }
 });
 
+test('a concurrent task claim failure never clears the checkpoint owned by another process', async () => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-cli-concurrent-project-'));
+  const stateRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-cli-concurrent-state-'));
+  try {
+    const taskStore = await createTaskStore(workspace, { baseDir: stateRoot });
+    const staging = await createStagingWorkspace(workspace);
+    await staging.begin();
+    await taskStore.save({ prompt: 'first process task', container: staging.container, attachments: [] });
+
+    const result = await runCli(workspace, stateRoot, 'http://127.0.0.1:1', ['--turbo', '-p', 'second process task']);
+    assert.notEqual(result.code, 0);
+    assert.match(result.stderr, /active or waiting to be resumed|interrupted task is available/i);
+    assert.equal((await taskStore.load()).prompt, 'first process task');
+    await taskStore.clear({ removeStage: true });
+  } finally {
+    await fs.rm(workspace, { recursive: true, force: true });
+    await fs.rm(stateRoot, { recursive: true, force: true });
+  }
+});
+
 test('agy init is explicit, creates only AGENTS.md, and refuses overwrite', async () => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-init-cli-'));
   const stateRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-init-cli-state-'));
@@ -472,6 +560,19 @@ test('agy init is explicit, creates only AGENTS.md, and refuses overwrite', asyn
     const second = await runStandalone(workspace, stateRoot, ['init']);
     assert.equal(second.code, 1);
     assert.match(second.stderr, /already exists/);
+  } finally {
+    await fs.rm(workspace, { recursive: true, force: true });
+    await fs.rm(stateRoot, { recursive: true, force: true });
+  }
+});
+
+test('CLI options that require values do not consume the next flag accidentally', async () => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-cli-option-value-'));
+  const stateRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-cli-option-state-'));
+  try {
+    const result = await runStandalone(workspace, stateRoot, ['--model', '--turbo']);
+    assert.equal(result.code, 1);
+    assert.match(result.stderr, /--model requires a value/);
   } finally {
     await fs.rm(workspace, { recursive: true, force: true });
     await fs.rm(stateRoot, { recursive: true, force: true });

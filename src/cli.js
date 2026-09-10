@@ -81,21 +81,29 @@ function parseArgs(argv) {
     version: false
   };
 
+  const optionValue = (index, option, { allowLeadingDash = false } = {}) => {
+    const value = argv[index + 1];
+    if (value === undefined || (!allowLeadingDash && value.startsWith('-'))) {
+      throw new Error(`${option} requires a value.`);
+    }
+    return value;
+  };
+
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (i === 0 && ['login', 'init', 'doctor', 'resume', 'provider', 'task'].includes(arg)) {
       result.command = arg;
       if (['provider', 'task'].includes(arg) && argv[i + 1] && !argv[i + 1].startsWith('-')) result.commandArg = argv[++i];
     }
-    else if (arg === '-p' || arg === '--print' || arg === '-m' || arg === '--message') result.print = argv[++i] ?? '';
-    else if (arg === '--attach') result.attachments.push(argv[++i] ?? '');
+    else if (arg === '-p' || arg === '--print' || arg === '-m' || arg === '--message') result.print = optionValue(i++, arg, { allowLeadingDash: true });
+    else if (arg === '--attach') result.attachments.push(optionValue(i++, arg));
     else if (arg === '-y' || arg === '--yes') result.yes = true;
     else if (arg === '--turbo') result.turbo = true;
     else if (arg === '--no-turbo') { result.turbo = false; result.yes = false; }
-    else if (arg === '--auth') result.auth = argv[++i] || '';
-    else if (arg === '-M' || arg === '--model') result.model = argv[++i] || '';
-    else if (arg === '--reasoning') result.reasoning = normalizeReasoning(argv[++i] || '');
-    else if (arg === '--base-url') result.baseUrl = argv[++i] || result.baseUrl;
+    else if (arg === '--auth') result.auth = optionValue(i++, arg);
+    else if (arg === '-M' || arg === '--model') result.model = optionValue(i++, arg);
+    else if (arg === '--reasoning') result.reasoning = normalizeReasoning(optionValue(i++, arg));
+    else if (arg === '--base-url') result.baseUrl = optionValue(i++, arg);
     else if (arg === '-h' || arg === '--help') result.help = true;
     else if (arg === '-v' || arg === '--version') result.version = true;
     else if (!arg.startsWith('-') && result.print === null && !result.command) result.print = arg;
@@ -307,6 +315,7 @@ async function executeAgentTask({
 
   const staging = await createStagingWorkspace(workspace, pending ? { container: pending.container } : {});
   let preserveStage = false;
+  let ownsTaskState = Boolean(pending);
   try {
     activity?.setPhase('Preparing');
     let stagedAttachments;
@@ -332,6 +341,7 @@ async function executeAgentTask({
       historyAttachments = attachments;
       modelPrompt = userText;
       await taskStore.save({ prompt: userText, container: staging.container, attachments: stagedAttachments });
+      ownsTaskState = true;
     }
 
     activity?.setPhase('Inspecting');
@@ -345,18 +355,27 @@ async function executeAgentTask({
     if (!answer) throw new Error('Agent returned no plain-text response.');
     activity?.setPhase('Applying changes');
     await staging.commit({ signal: controller?.signal });
-    await taskStore.clear();
+    // Publication already succeeded at this point. Failure to remove the
+    // external crash marker must not turn a successful real-project commit
+    // into a false task failure. taskStore.load() self-clears markers whose
+    // staging directory no longer exists after close().
+    try { await taskStore.clear(); } catch {}
     return { answer, userText, historyAttachments };
   } catch (error) {
     if (error?.code === 'RESUME_CONFLICT') {
       preserveStage = true;
     } else {
-      try { await taskStore.clear(); } catch {}
+      if (ownsTaskState) {
+        try { await taskStore.clear(); } catch {}
+      }
       try { await staging.discard(); } catch {}
     }
     throw error;
   } finally {
-    await staging.close({ preserve: preserveStage });
+    // Temporary cleanup must never override the actual task result. A failed
+    // deletion can leave only an orphaned OS-temp directory; project state
+    // and the user-visible success/failure have already been determined.
+    try { await staging.close({ preserve: preserveStage }); } catch {}
   }
 }
 async function runInteractive(options, workspace, settingsStore) {
@@ -368,6 +387,8 @@ async function runInteractive(options, workspace, settingsStore) {
   const historyStore = await createHistoryStore(workspace);
   const taskStore = await createTaskStore(workspace);
   let conversation = await historyStore.load();
+  const historyRecovery = historyStore.takeRecoveryNotice?.();
+  if (historyRecovery) output.write(`Error: ${historyRecovery}\n\n`);
   let pendingAttachments = await resolveAttachmentList(options.attachments, workspace);
   let activeIndicator = null;
   let activeController = null;
@@ -743,6 +764,8 @@ export async function main(argv = process.argv.slice(2)) {
     const historyStore = await createHistoryStore(workspace);
     const taskStore = await createTaskStore(workspace);
     const conversation = await historyStore.load();
+    const historyRecovery = historyStore.takeRecoveryNotice?.();
+    if (historyRecovery) output.write(`Error: ${historyRecovery}\n`);
     const pending = await taskStore.load();
     if (shouldResume && !pending) throw new Error('No interrupted task is available in this project.');
     if (!shouldResume && pending) {
