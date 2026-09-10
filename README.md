@@ -14,6 +14,10 @@ Install:
 npm install -g antigyc
 ```
 
+That is the complete normal installation. You do **not** install Antigravity or Gemini CLI separately, and you do **not** need an API key. `antigyc` provisions and verifies its private official Google backend automatically. On a brand-new device, your first real request may open Google's browser sign-in once; after you approve it, the original request continues automatically.
+
+On Windows, if `antigyc` is not recognized in the same terminal immediately after the first global install, close that terminal and open one new terminal so it inherits the updated user PATH.
+
 Start working in your project:
 
 ```text
