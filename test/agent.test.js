@@ -227,6 +227,67 @@ test('direct API refuses completion when the model repeatedly ignores post-edit 
   assert.equal(calls, 4);
 });
 
+test('direct API emits sanitized command events and marks failed commands as failed', async () => {
+  const events = [];
+  let calls = 0;
+  const agent = new CodingAgent({
+    workspace: process.cwd(),
+    displayWorkspace: process.cwd(),
+    apiKey: 'test-key',
+    model: 'gemini-3.8-flash',
+    tools: { execute: async () => 'Command failed.\nforced failure' },
+    onEvent: (event) => events.push(event),
+    fetchImpl: async () => {
+      calls += 1;
+      const parts = calls === 1
+        ? [{ functionCall: { name: 'run_command', args: { command: 'deploy --token super-secret' } } }]
+        : [{ text: 'Failure handled.' }];
+      return { ok: true, status: 200, async json() { return { candidates: [{ content: { role: 'model', parts } }] }; } };
+    }
+  });
+
+  assert.equal(await agent.prompt('run the check'), 'Failure handled.');
+  const started = events.find((event) => event.type === 'command_started');
+  const finished = events.find((event) => event.type === 'command_finished');
+  assert.ok(started);
+  assert.ok(finished);
+  assert.equal(finished.success, false);
+  assert.equal(events.some((event) => event.type === 'test_started' || event.type === 'test_finished'), false);
+  assert.equal('command' in started, false);
+  assert.equal('command' in finished, false);
+});
+
+test('direct API reports every file touched by apply_patch without undefined paths', async () => {
+  const events = [];
+  let calls = 0;
+  const agent = new CodingAgent({
+    workspace: process.cwd(),
+    displayWorkspace: process.cwd(),
+    apiKey: 'test-key',
+    model: 'gemini-3.8-flash',
+    tools: { execute: async () => 'Applied 2 patch hunks across 2 files.' },
+    onEvent: (event) => events.push(event),
+    fetchImpl: async () => {
+      calls += 1;
+      const parts = calls === 1
+        ? [{ functionCall: { name: 'apply_patch', args: { changes: [
+          { path: 'src/one.js', old_text: 'one', new_text: 'two' },
+          { path: 'src/two.js', old_text: 'one', new_text: 'two' }
+        ] } } }]
+        : calls === 2
+          ? [{ functionCall: { name: 'read_file', args: { path: 'src/one.js' } } }]
+          : [{ text: 'Patched and verified.' }];
+      return { ok: true, status: 200, async json() { return { candidates: [{ content: { role: 'model', parts } }] }; } };
+    }
+  });
+
+  assert.equal(await agent.prompt('patch files'), 'Patched and verified.');
+  assert.deepEqual(
+    events.filter((event) => event.type === 'file_modified').map((event) => event.path),
+    ['src/one.js', 'src/two.js']
+  );
+});
+
 test('direct API retries transient model failures automatically', async () => {
   let calls = 0;
   const agent = new CodingAgent({

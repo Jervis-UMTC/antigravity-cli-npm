@@ -189,7 +189,7 @@ const functionDeclarations = [
 ];
 
 function systemPrompt(workspace) {
-  return `Shell response rules: Never use emojis in any user-facing response. Keep terminal output plain text and professional. Every final user-facing response must end with a final section titled "Summary"; that Summary section must be the last section and briefly state the result and validation performed.\n\nYou are an autonomous coding agent operating in this project:\n${workspace}\n\nUse the provided tools to inspect, edit, test, and debug the project until the user's request is actually complete. For broad tasks, map the repository first with project_overview, find_symbol/find_references, and targeted searches rather than dumping the whole tree. Use discover_checks to identify authoritative validation commands before choosing tests. Prefer run_process with executable/argument arrays when shell syntax is unnecessary, and use run_command only when a shell is actually needed. Prefer apply_patch for coordinated focused edits across existing files and write_file for new or intentionally rewritten files. Maintain an internal plan and update it as evidence changes, but never expose private reasoning or tool-by-tool activity. Work only inside the project unless the user explicitly asks for a command that does otherwise and the command is approved. Inspect relevant files before editing. After meaningful changes, inspect the resulting diff/files and run the most relevant available checks. If a check fails, diagnose it, make evidence-backed fixes, and rerun it instead of stopping at the first failure. Never claim a command passed unless you ran it and saw the result. Do not declare completion immediately after editing without a successful post-edit verification pass. Keep the final terminal response concise and practical.`;
+  return `Shell response rules: Never use emojis in any user-facing response. Keep terminal output plain text and professional. Do not use Markdown formatting or Markdown syntax in the final response: no # headings, bold/italic markers, backticks, fenced code blocks, Markdown tables, blockquotes, or Markdown link syntax. Use ordinary text lines and simple hyphen lists only when a list is useful. Every final user-facing response must end with a final section titled "Summary"; that plain-text Summary section must be the last section and briefly state the result and validation performed.\n\nYou are an autonomous coding agent operating in this project:\n${workspace}\n\nUse the provided tools to inspect, edit, test, and debug the project until the user's request is actually complete. For broad tasks, map the repository first with project_overview, find_symbol/find_references, and targeted searches rather than dumping the whole tree. Use discover_checks to identify authoritative validation commands before choosing tests. Prefer run_process with executable/argument arrays when shell syntax is unnecessary, and use run_command only when a shell is actually needed. Prefer apply_patch for coordinated focused edits across existing files and write_file for new or intentionally rewritten files. Maintain an internal plan and update it as evidence changes, but never expose private reasoning or tool-by-tool activity. Work only inside the project unless the user explicitly asks for a command that does otherwise and the command is approved. Inspect relevant files before editing. After meaningful changes, inspect the resulting diff/files and run the most relevant available checks. If a check fails, diagnose it, make evidence-backed fixes, and rerun it instead of stopping at the first failure. Never claim a command passed unless you ran it and saw the result. Do not declare completion immediately after editing without a successful post-edit verification pass. Keep the final terminal response concise and practical.`;
 }
 
 function normalizeBaseUrl(value) {
@@ -394,7 +394,7 @@ export class CodingAgent {
             emptyFinalRecoveryUsed = true;
             this.history.push({
               role: 'user',
-              parts: [{ text: 'Return a concise non-empty final user-facing response for the immediately previous request. Do not use emojis. End the response with a final section titled "Summary" and make that the last section.' }]
+              parts: [{ text: 'Return a concise non-empty final user-facing response for the immediately previous request. It must be plain text. Do not use emojis or Markdown syntax. Do not use headings with #, emphasis markers, backticks, fenced code blocks, Markdown tables, blockquotes, or Markdown link syntax. End the response with a plain-text section titled "Summary" and make that the last section.' }]
             });
             continue;
           }
@@ -412,7 +412,6 @@ export class CodingAgent {
           this.emitEvent('verification', { phase: 'Verifying changes' });
         } else if (callNames.has('run_command') || callNames.has('run_process')) {
           this.onActivity('Running checks');
-          this.emitEvent('test_started');
         } else {
           this.onActivity('Inspecting project');
         }
@@ -422,36 +421,36 @@ export class CodingAgent {
         for (const call of calls) {
           operationIndex += 1;
           if (['write_file', 'replace_in_file', 'apply_patch', 'delete_path'].includes(call.name)) {
-            const target = call.args?.path || call.args?.file || call.args?.target;
-            this.onActivity(target ? `Editing ${String(target)}` : 'Editing files');
+            this.onActivity('Working');
           } else if (['run_command', 'run_process'].includes(call.name)) {
-            const command = call.args?.command;
-            this.onActivity(command ? `Running ${String(command).slice(0, 48)}` : 'Running checks');
+            this.onActivity('Checking');
           } else {
             this.onActivity('Inspecting project');
           }
+          const isCommandCall = call.name === 'run_command' || call.name === 'run_process';
+          if (isCommandCall) this.emitEvent('command_started');
+
           let result;
           try {
-            if (call.name === 'run_command' || call.name === 'run_process') {
-              this.emitEvent('command_started', { command: call.args?.command || call.args?.executable });
-            }
             result = await this.tools.execute(call.name, call.args || {}, { signal });
           } catch (error) {
             if (isCancellation(error) || signal?.aborted) throw error;
             result = `Tool error: ${error instanceof Error ? error.message : String(error)}`;
           }
 
-          if (call.name === 'run_command' || call.name === 'run_process') {
-            this.emitEvent('command_finished', { command: call.args?.command || call.args?.executable, success: !String(result).startsWith('Tool error:') });
-            this.emitEvent('test_finished', { success: !String(result).startsWith('Tool error:') });
-          }
-          if (['write_file', 'replace_in_file', 'apply_patch', 'delete_path'].includes(call.name)) {
-            const eventType = call.name === 'delete_path' ? 'file_deleted' : (call.name === 'write_file' ? 'file_created' : 'file_modified');
-            this.emitEvent(eventType, { path: call.args?.path });
-          }
-
           const resultText = String(result ?? '');
           const toolSucceeded = !/^(?:Tool error:|Command failed\.|Command denied by user\.)/.test(resultText);
+          if (isCommandCall) this.emitEvent('command_finished', { success: toolSucceeded });
+          if (toolSucceeded && call.name === 'delete_path') {
+            this.emitEvent('file_deleted', { path: call.args?.path });
+          } else if (toolSucceeded && call.name === 'apply_patch') {
+            const paths = [...new Set((Array.isArray(call.args?.changes) ? call.args.changes : [])
+              .map((change) => change?.path)
+              .filter(Boolean))];
+            for (const changedPath of paths) this.emitEvent('file_modified', { path: changedPath });
+          } else if (toolSucceeded && (call.name === 'write_file' || call.name === 'replace_in_file')) {
+            this.emitEvent('file_modified', { path: call.args?.path });
+          }
           if (toolSucceeded && ['write_file', 'replace_in_file', 'apply_patch', 'delete_path'].includes(call.name)) {
             latestMutation = operationIndex;
           } else if (toolSucceeded && ['run_command', 'run_process', 'git_diff', 'read_file'].includes(call.name) && latestMutation >= 0) {

@@ -108,6 +108,21 @@ test('activity indicator can switch to a fixed applying phase and erase it befor
   assert.equal(stream.writes.at(-1), `\r${' '.repeat('Applying changes...'.length)}\r`);
 });
 
+test('activity indicator maps agent events onto generic transient phases', () => {
+  const scheduler = fakeScheduler();
+  const stream = ttyStream();
+  const activity = createActivityIndicator(stream, { ...scheduler, now: () => 0 });
+  scheduler.timeouts[0].callback();
+
+  activity.emit({ type: 'file_modified', path: 'src/private.js' });
+  assert.match(stream.writes.at(-1), /^\rWorking\.\.\. 0s/);
+  activity.emit({ type: 'command_started', command: 'deploy --token secret' });
+  assert.match(stream.writes.at(-1), /^\rChecking\.\.\. 0s/);
+  assert.doesNotMatch(stream.writes.join(''), /private\.js|deploy|token|secret/);
+
+  activity.stop();
+});
+
 test('activity indicator produces no output for non-TTY streams', () => {
   const scheduler = fakeScheduler();
   const writes = [];

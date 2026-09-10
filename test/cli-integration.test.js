@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { createGoogleAuthBootstrap, promptLabel } from '../src/cli.js';
+import { createGoogleAuthBootstrap, plainTerminalText, promptLabel } from '../src/cli.js';
 import { createStagingWorkspace } from '../src/staging.js';
 import { createTaskStore } from '../src/task-state.js';
 
@@ -124,6 +124,42 @@ function writeFileCall(file, content) {
 
 test('interactive prompt uses a minimal antigyc shell indicator', () => {
   assert.equal(promptLabel('C:\\projects\\my-app'), 'antigyc C:\\projects\\my-app> ');
+});
+
+test('terminal response rendering removes Markdown syntax without corrupting fenced code', () => {
+  const rendered = plainTerminalText([
+    '# Result',
+    '',
+    '**Fixed** `src/app.js` and [docs](https://example.com).',
+    '',
+    '```js',
+    '# literal code comment',
+    'const value = "**literal**";',
+    '```',
+    '',
+    '| Check | Result |',
+    '| --- | --- |',
+    '| tests | passed |',
+    '',
+    'Summary',
+    '__Done__.'
+  ].join('\n'));
+
+  assert.equal(rendered, [
+    'Result',
+    '',
+    'Fixed src/app.js and docs (https://example.com).',
+    '',
+    '# literal code comment',
+    'const value = "**literal**";',
+    '',
+    'Check | Result',
+    'tests | passed',
+    '',
+    'Summary',
+    'Done.'
+  ].join('\n'));
+  assert.doesNotMatch(rendered, /```|__|^# Result$/m);
 });
 
 test('normal Google use bootstraps authentication once without a separate login command', async () => {

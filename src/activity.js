@@ -78,9 +78,13 @@ export function createActivityIndicator(stream, {
     emit(event) {
       if (stopped || !event) return;
       const type = String(event.type || '').trim();
-      if (type === 'check') this.setPhase('Verifying changes');
-      if (type === 'command') this.setPhase('Running checks');
-      if (type === 'file') this.setPhase('Editing files');
+      if (type === 'phase_changed') {
+        const phase = String(event.phase || '').toLowerCase();
+        if (phase.includes('inspect')) this.setPhase('Inspecting');
+        else if (phase.includes('check') || phase.includes('verif') || phase.includes('test')) this.setPhase('Checking');
+        else this.setPhase('Working');
+      } else if (type === 'verification' || type === 'command_started' || type === 'command_finished' || type === 'test_started' || type === 'test_finished') this.setPhase('Checking');
+      else if (type === 'file_created' || type === 'file_modified' || type === 'file_deleted') this.setPhase('Working');
     },
     pause() {
       if (!enabled || paused || stopped) return;
@@ -109,14 +113,13 @@ export const activityDefaults = {
 
 export function renderActivityEvent(event) {
   if (!event) return '';
-  if (event.type === 'file_created') return `Created: ${event.path}`;
-  if (event.type === 'file_modified') return `Editing: ${event.path}`;
-  if (event.type === 'file_deleted') return `Deleted: ${event.path}`;
-  if (event.type === 'command_started') return `Running: ${event.command}`;
-  if (event.type === 'command_finished') return `Finished: ${event.command}${event.success ? '' : ' (failed)'}`;
-  if (event.type === 'test_started') return 'Running tests';
-  if (event.type === 'test_finished') return `Tests ${event.success ? 'passed' : 'failed'}`;
-  if (event.type === 'verification') return 'Verification: checking changes';
-  if (event.type === 'phase_changed') return event.phase || 'Working';
+  if (event.type === 'phase_changed') {
+    const phase = String(event.phase || '').toLowerCase();
+    if (phase.includes('inspect')) return 'Inspecting';
+    if (phase.includes('check') || phase.includes('verif') || phase.includes('test')) return 'Checking';
+    return 'Working';
+  }
+  if (['verification', 'command_started', 'command_finished', 'test_started', 'test_finished'].includes(event.type)) return 'Checking';
+  if (['file_created', 'file_modified', 'file_deleted'].includes(event.type)) return 'Working';
   return '';
 }

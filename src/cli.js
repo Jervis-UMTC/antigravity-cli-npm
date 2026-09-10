@@ -3,8 +3,7 @@ import path from 'node:path';
 import readline from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 import { CodingAgent, defaults, discoverApiModels } from './agent.js';
-import { createActivityIndicator, renderActivityEvent } from './activity.js';
-import { createEventSink } from './events.js';
+import { createActivityIndicator } from './activity.js';
 import { attachmentSummary, resolveAttachment } from './attachments.js';
 import { isCancellation } from './cancel.js';
 import { renderDoctor, runDoctor } from './doctor.js';
@@ -116,6 +115,44 @@ function helpText(version) {
 
 export function promptLabel(workspace) {
   return `antigyc ${workspace}> `;
+}
+
+export function plainTerminalText(value) {
+  const lines = String(value ?? '').replace(/\r\n?/g, '\n').split('\n');
+  const output = [];
+  let inFence = false;
+
+  for (const rawLine of lines) {
+    if (/^\s*(?:```|~~~)/.test(rawLine)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) {
+      output.push(rawLine);
+      continue;
+    }
+    if (/^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*$/.test(rawLine)) continue;
+
+    let line = rawLine
+      .replace(/^\s{0,3}#{1,6}\s+/, '')
+      .replace(/^\s{0,3}>\s?/, '')
+      .replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '$1 ($2)')
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1 ($2)')
+      .replace(/<(https?:\/\/[^>]+)>/g, '$1')
+      .replace(/`([^`\n]+)`/g, '$1')
+      .replace(/\*\*([^*\n]+)\*\*/g, '$1')
+      .replace(/__([^_\n]+)__/g, '$1')
+      .replace(/~~([^~\n]+)~~/g, '$1')
+      .replace(/(^|[\s([{])\*([^*\n]+)\*(?=$|[\s)\]}.!?;,:])/g, '$1$2')
+      .replace(/\\([\\`*_{}\[\]()#+\-.!>])/g, '$1');
+
+    if (/^\s*\|.*\|\s*$/.test(line)) {
+      line = line.trim().replace(/^\|\s*/, '').replace(/\s*\|$/, '');
+    }
+    output.push(line);
+  }
+
+  return output.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
 function resolveAuthMode(options) {
@@ -298,13 +335,14 @@ async function executeAgentTask({
     }
 
     activity?.setPhase('Inspecting');
-    const agent = await buildAgent(options, rl, staging.workspace, workspace, conversation, () => activity, createEventSink((event) => {
-      if (event) output.write(`${renderActivityEvent(event)}\n`);
-    }));
-    const answer = await agent.prompt(modelPrompt, {
+    const agent = await buildAgent(options, rl, staging.workspace, workspace, conversation, () => activity, (event) => {
+      activity?.emit?.(event);
+    });
+    const answer = plainTerminalText(await agent.prompt(modelPrompt, {
       attachments: stagedAttachments,
       signal: controller?.signal
-    });
+    }));
+    if (!answer) throw new Error('Agent returned no plain-text response.');
     activity?.setPhase('Applying changes');
     await staging.commit({ signal: controller?.signal });
     await taskStore.clear();

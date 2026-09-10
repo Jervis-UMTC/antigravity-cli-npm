@@ -5,6 +5,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { conversationAsText, conversationForModel } from './history.js';
 import { cancellationError, throwIfAborted } from './cancel.js';
+import { createEventSink } from './events.js';
 
 const MAX_CAPTURE_BYTES = 10 * 1024 * 1024;
 const REASONING_BUDGETS = { low: 1024, high: 8192 };
@@ -796,7 +797,7 @@ export class GoogleAccountAgent {
     this.captureBackend = backend.capture || captureExecutable;
     this.modelsLoader = backend.models || discoverOfficialAntigravityModels;
     this.onActivity = typeof onActivity === 'function' ? onActivity : () => {};
-    this.onEvent = typeof onEvent === 'function' ? onEvent : () => {};
+    this.emitEvent = createEventSink(typeof onEvent === 'function' ? onEvent : () => {});
   }
 
   setModel(model) {
@@ -828,7 +829,7 @@ export class GoogleAccountAgent {
     const attachmentInstruction = attachments.length
       ? `\n\nAttachments for this request:\n${attachments.map((attachment) => `- ${attachment.name}: ${attachment.stagedPath}`).join('\n')}\nRead every listed attachment with the read_file tool before answering. Images and PDFs are multimodal inputs. Do not copy attachment files into the project.`
       : '';
-    const hiddenInstruction = `Shell response rules: Never use emojis in any user-facing response. Keep terminal output plain text and professional. Every final user-facing response must end with a final section titled "Summary"; that Summary section must be the last section and briefly state the result and validation performed.\n\nOperate autonomously on this staged copy as the project at ${this.displayWorkspace}. Do not mention staging paths, conversation storage, or internal tool activity. For broad tasks, map the repository before editing. Continue through inspection, implementation, testing, and debugging until the user's coding request is actually complete. Do not stop at the first failed check: diagnose evidence-backed failures, fix them when they are in scope, and rerun the relevant validation. After modifications, inspect the resulting changes and run appropriate tests/build/lint/type checks when available before finalizing. Never claim validation passed unless it was actually run. Always return a non-empty concise final user-facing response, including for inspection-only requests or when no files change.${previousConversation}${attachmentInstruction}\n\nUser request:\n${text}`;
+    const hiddenInstruction = `Shell response rules: Never use emojis in any user-facing response. Keep terminal output plain text and professional. Do not use Markdown formatting or Markdown syntax in the final response: no # headings, bold/italic markers, backticks, fenced code blocks, Markdown tables, blockquotes, or Markdown link syntax. Use ordinary text lines and simple hyphen lists only when a list is useful. Every final user-facing response must end with a final section titled "Summary"; that plain-text Summary section must be the last section and briefly state the result and validation performed.\n\nOperate autonomously on this staged copy as the project at ${this.displayWorkspace}. Do not mention staging paths, conversation storage, or internal tool activity. For broad tasks, map the repository before editing. Continue through inspection, implementation, testing, and debugging until the user's coding request is actually complete. Do not stop at the first failed check: diagnose evidence-backed failures, fix them when they are in scope, and rerun the relevant validation. After modifications, inspect the resulting changes and run appropriate tests/build/lint/type checks when available before finalizing. Never claim validation passed unless it was actually run. Always return a non-empty concise final user-facing response, including for inspection-only requests or when no files change.${previousConversation}${attachmentInstruction}\n\nUser request:\n${text}`;
     const args = buildAntigravityArgs({
       prompt: hiddenInstruction,
       model: effectiveModel,
@@ -837,8 +838,8 @@ export class GoogleAccountAgent {
       attachments,
       conversationId: this.conversationId
     });
-    this.onActivity('Executing');
-    this.onEvent('phase_changed', { phase: 'Executing' });
+    this.onActivity('Working');
+    this.emitEvent('phase_changed', { phase: 'Working' });
     const result = await this.captureBackend(binary, args, {
       cwd: this.workspace,
       env: googleAccountEnv(process.env),
@@ -864,7 +865,7 @@ export class GoogleAccountAgent {
     this.conversationId = parsed.conversationId || this.conversationId;
     if (!parsed.response && this.conversationId) {
       const recoveryArgs = buildAntigravityArgs({
-        prompt: 'Return the concise non-empty final user-facing response for the immediately previous request. Do not make additional project changes. Do not use emojis. End the response with a final section titled "Summary" and make that the last section.',
+        prompt: 'Return the concise non-empty final user-facing response for the immediately previous request. It must be plain text. Do not make additional project changes. Do not use emojis or Markdown syntax. Do not use headings with #, emphasis markers, backticks, fenced code blocks, Markdown tables, blockquotes, or Markdown link syntax. End the response with a plain-text section titled "Summary" and make that the last section.',
         model: effectiveModel,
         reasoning: this.reasoning,
         yes: false,

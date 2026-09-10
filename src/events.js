@@ -10,6 +10,9 @@ const SAFE_EVENT_TYPES = new Set([
   'phase_changed'
 ]);
 
+const FILE_EVENT_TYPES = new Set(['file_created', 'file_modified', 'file_deleted']);
+const SUCCESS_EVENT_TYPES = new Set(['command_finished', 'test_finished']);
+
 function cleanText(value) {
   return String(value || '').replace(/[\r\n]+/g, ' ').trim();
 }
@@ -17,10 +20,9 @@ function cleanText(value) {
 export function createAgentEvent(type, data = {}) {
   if (!SAFE_EVENT_TYPES.has(type)) return null;
   const event = { type, timestamp: Date.now() };
-  if (data.path) event.path = cleanText(data.path);
-  if (data.command) event.command = cleanText(data.command).slice(0, 160);
-  if (data.phase) event.phase = cleanText(data.phase);
-  if (typeof data.success === 'boolean') event.success = data.success;
+  if (FILE_EVENT_TYPES.has(type) && data.path) event.path = cleanText(data.path);
+  if (type === 'phase_changed' && data.phase) event.phase = cleanText(data.phase);
+  if (SUCCESS_EVENT_TYPES.has(type) && typeof data.success === 'boolean') event.success = data.success;
   return event;
 }
 

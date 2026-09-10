@@ -522,12 +522,14 @@ test('Google model discovery prefers models exposed by the signed-in Antigravity
 
 test('GoogleAccountAgent executes through official Antigravity headless mode and resumes its conversation', async () => {
   const calls = [];
+  const events = [];
   const agent = new GoogleAccountAgent({
     workspace: path.join('C:\\tmp', 'stage'),
     displayWorkspace: path.join('C:\\project'),
     model: 'gemini-3.8-flash',
     reasoning: 'high',
     yes: true,
+    onEvent: (event) => events.push(event),
     backend: {
       ensure: async () => 'official-agy',
       models: async () => ['gemini-3.8-flash'],
@@ -561,6 +563,8 @@ test('GoogleAccountAgent executes through official Antigravity headless mode and
   assert.match(firstPrompt, /Do not stop at the first failed check/);
   assert.match(firstPrompt, /run appropriate tests\/build\/lint\/type checks/);
   assert.equal(calls[0].options.env.GOOGLE_GENAI_USE_GCA, undefined);
+  assert.equal(events.filter((event) => event.type === 'phase_changed').length, 2);
+  assert.equal(events.every((event) => typeof event.type === 'string'), true);
   assert.deepEqual(calls[1].args.slice(calls[1].args.indexOf('--conversation'), calls[1].args.indexOf('--conversation') + 2), ['--conversation', 'conversation-123']);
 });
 
