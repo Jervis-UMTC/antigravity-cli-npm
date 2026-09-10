@@ -568,6 +568,33 @@ test('GoogleAccountAgent executes through official Antigravity headless mode and
   assert.deepEqual(calls[1].args.slice(calls[1].args.indexOf('--conversation'), calls[1].args.indexOf('--conversation') + 2), ['--conversation', 'conversation-123']);
 });
 
+test('GoogleAccountAgent bounds large persisted conversation history before seeding a new provider session', async () => {
+  const calls = [];
+  const history = Array.from({ length: 100 }, (_, index) => ({
+    role: index % 2 ? 'assistant' : 'user',
+    text: `${index} ${'h'.repeat(12_000)}`
+  }));
+  const agent = new GoogleAccountAgent({
+    workspace: path.join('C:\\tmp', 'stage'),
+    displayWorkspace: path.join('C:\\project'),
+    history,
+    backend: {
+      ensure: async () => 'official-agy',
+      models: async () => ['gemini-3.8-flash'],
+      capture: async (_binary, args) => {
+        calls.push(args);
+        return { code: 0, stdout: '{"status":"SUCCESS","response":"ok\\n\\nSummary\\nok","conversation_id":"bounded-1"}', stderr: '' };
+      }
+    }
+  });
+
+  assert.match(await agent.prompt('continue'), /ok/);
+  const prompt = calls[0][calls[0].indexOf('-p') + 1];
+  assert.ok(prompt.length < 75_000);
+  assert.match(prompt, /99 h/);
+  assert.doesNotMatch(prompt, /0 h/);
+});
+
 test('GoogleAccountAgent recovers an empty successful provider response and returns the recovery text', async () => {
   const calls = [];
   const agent = new GoogleAccountAgent({

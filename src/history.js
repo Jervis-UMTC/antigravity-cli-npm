@@ -6,6 +6,7 @@ import path from 'node:path';
 const MAX_MESSAGES = 200;
 const MODEL_HISTORY_MESSAGES = 30;
 const MAX_MESSAGE_CHARS = 24_000;
+const MODEL_HISTORY_CHARS = 60_000;
 
 function canonicalWorkspace(workspace) {
   const resolved = path.resolve(workspace);
@@ -19,7 +20,9 @@ function projectKey(workspace) {
 function trimText(value) {
   const text = String(value || '');
   if (text.length <= MAX_MESSAGE_CHARS) return text;
-  return `${text.slice(0, MAX_MESSAGE_CHARS)}\n[truncated]`;
+  const tailChars = Math.floor(MAX_MESSAGE_CHARS / 3);
+  const headChars = MAX_MESSAGE_CHARS - tailChars;
+  return `${text.slice(0, headChars)}\n[truncated ${text.length - MAX_MESSAGE_CHARS} chars]\n${text.slice(-tailChars)}`;
 }
 
 function normalizeMessages(messages) {
@@ -105,7 +108,23 @@ export function appendConversationTurn(messages, text, attachments, answer) {
 }
 
 export function conversationForModel(messages) {
-  return normalizeMessages(messages).slice(-MODEL_HISTORY_MESSAGES);
+  const normalized = normalizeMessages(messages).slice(-MODEL_HISTORY_MESSAGES);
+  const selected = [];
+  let chars = 0;
+
+  for (let index = normalized.length - 1; index >= 0; index -= 1) {
+    const message = normalized[index];
+    const attachmentChars = message.attachments.reduce((total, attachment) => (
+      total + attachment.name.length + attachment.mimeType.length + attachment.kind.length + 16
+    ), 0);
+    const cost = message.text.length + attachmentChars + 32;
+    if (selected.length && chars + cost > MODEL_HISTORY_CHARS) break;
+    selected.unshift(message);
+    chars += cost;
+  }
+
+  while (selected.length && selected[0].role === 'assistant') selected.shift();
+  return selected;
 }
 
 export function conversationAsText(messages) {

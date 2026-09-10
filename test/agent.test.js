@@ -333,3 +333,86 @@ test('direct API compacts oversized tool results before the next model request',
   assert.ok(result.length < 25_000);
   assert.match(result, /tool output truncated/);
 });
+
+test('direct API compacts old tool exchanges during very long autonomous tasks', async () => {
+  const requestContents = [];
+  let calls = 0;
+  const agent = new CodingAgent({
+    workspace: process.cwd(),
+    displayWorkspace: process.cwd(),
+    apiKey: 'test-key',
+    model: 'gemini-3.8-flash',
+    history: Array.from({ length: 30 }, (_, index) => ({
+      role: index % 2 ? 'assistant' : 'user',
+      text: `${index} ${'h'.repeat(8_000)}`
+    })),
+    tools: {
+      execute: async (_name, args) => `result-${args.command} ${'x'.repeat(30_000)}`
+    },
+    fetchImpl: async (_url, options) => {
+      const body = JSON.parse(options.body);
+      requestContents.push(body.contents);
+      calls += 1;
+      const parts = calls <= 10
+        ? [{ functionCall: { name: 'run_command', args: { command: `check-${calls}` } } }]
+        : [{ text: 'Long task completed.\n\nSummary\nCompleted.' }];
+      return { ok: true, status: 200, async json() { return { candidates: [{ content: { role: 'model', parts } }] }; } };
+    }
+  });
+
+  const answer = await agent.prompt('perform a long multi-step inspection');
+  assert.match(answer, /Long task completed/);
+  assert.equal(calls, 11);
+  assert.ok(requestContents.some((contents) => JSON.stringify(contents).includes('Earlier conversation or tool activity was compacted')));
+  assert.ok(Math.max(...requestContents.map((contents) => JSON.stringify(contents).length)) < 140_000);
+
+  for (const contents of requestContents) {
+    const firstResponse = contents.findIndex((content) => content.parts?.some((part) => part.functionResponse));
+    if (firstResponse >= 0) {
+      assert.ok(firstResponse > 0);
+      assert.ok(contents[firstResponse - 1].parts?.some((part) => part.functionCall));
+    }
+  }
+});
+
+test('direct API retries an explicit provider context-limit error with a smaller history window', async () => {
+  const sizes = [];
+  let calls = 0;
+  const history = Array.from({ length: 6 }, (_, index) => ({
+    role: index % 2 ? 'assistant' : 'user',
+    text: `${index} ${'h'.repeat(9_000)}`
+  }));
+  const agent = new CodingAgent({
+    workspace: process.cwd(),
+    displayWorkspace: process.cwd(),
+    apiKey: 'test-key',
+    model: 'gemini-3.8-flash',
+    history,
+    tools: { execute: async () => 'ok' },
+    fetchImpl: async (_url, options) => {
+      const body = JSON.parse(options.body);
+      sizes.push(JSON.stringify(body.contents).length);
+      calls += 1;
+      if (calls === 1) {
+        return {
+          ok: false,
+          status: 400,
+          statusText: 'Bad Request',
+          async json() { return { error: { message: 'input token count exceeds the context limit' } }; }
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { candidates: [{ content: { role: 'model', parts: [{ text: 'Recovered.\n\nSummary\nRecovered.' }] } }] };
+        }
+      };
+    }
+  });
+
+  assert.match(await agent.prompt(`continue ${'q'.repeat(20_000)}`), /Recovered/);
+  assert.equal(calls, 2);
+  assert.ok(sizes[1] < sizes[0]);
+  assert.ok(sizes[1] < 70_000);
+});

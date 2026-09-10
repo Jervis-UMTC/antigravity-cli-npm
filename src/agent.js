@@ -7,6 +7,8 @@ const DEFAULT_MODEL = 'gemini-3.8-flash';
 const DEFAULT_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
 const MAX_STEPS = 120;
 const MAX_TOOL_RESULT_CHARS = 24_000;
+const MAX_REQUEST_CONTEXT_CHARS = 120_000;
+const CONTEXT_RETRY_CHARS = 60_000;
 const MAX_MODEL_RETRIES = 3;
 const STAGNATION_NUDGE_AFTER = 3;
 const STAGNATION_FAIL_AFTER = 6;
@@ -280,6 +282,70 @@ function compactToolResult(value) {
   return `${text.slice(0, headChars)}\n...[tool output truncated ${text.length - MAX_TOOL_RESULT_CHARS} chars; showing final section below; request a narrower read/search or rerun a focused command if more detail is needed]...\n${text.slice(-tailChars)}`;
 }
 
+function contentContextChars(content) {
+  let chars = 32;
+  for (const part of content?.parts || []) {
+    if (typeof part.text === 'string') chars += part.text.length;
+    if (part.functionCall) chars += JSON.stringify(part.functionCall).length;
+    if (part.functionResponse) chars += JSON.stringify(part.functionResponse).length;
+    if (part.inlineData) chars += String(part.inlineData.mimeType || '').length + 64;
+  }
+  return chars;
+}
+
+function currentTaskUnits(contents) {
+  const units = [];
+  for (let index = 0; index < contents.length; index += 1) {
+    const current = contents[index];
+    const hasCall = current?.role === 'model' && current.parts?.some((part) => part.functionCall);
+    const next = contents[index + 1];
+    const hasResponse = next?.role === 'user' && next.parts?.some((part) => part.functionResponse);
+    if (hasCall && hasResponse) {
+      units.push([current, next]);
+      index += 1;
+    } else {
+      units.push([current]);
+    }
+  }
+  return units;
+}
+
+function requestContents(history, currentRequestIndex, maxChars = MAX_REQUEST_CONTEXT_CHARS) {
+  const total = history.reduce((sum, content) => sum + contentContextChars(content), 0);
+  if (total <= maxChars) return history;
+
+  const anchor = history[currentRequestIndex];
+  if (!anchor) return history.slice(-1);
+  const prior = history.slice(0, currentRequestIndex);
+  const taskContents = history.slice(currentRequestIndex + 1);
+  const units = currentTaskUnits(taskContents);
+  const note = { text: '[Earlier conversation or tool activity was compacted to keep this long task within the model context window. Reinspect current project state when an omitted detail is needed.]' };
+  const anchored = { ...anchor, parts: [...(anchor.parts || []), note] };
+  let remaining = maxChars - contentContextChars(anchored);
+  if (remaining <= 0) return [anchor];
+
+  const retainedUnits = [];
+  for (let index = units.length - 1; index >= 0; index -= 1) {
+    const unit = units[index];
+    const cost = unit.reduce((sum, content) => sum + contentContextChars(content), 0);
+    if (cost > remaining) break;
+    retainedUnits.unshift(unit);
+    remaining -= cost;
+  }
+
+  const retainedPrior = [];
+  for (let index = prior.length - 1; index >= 0; index -= 1) {
+    const content = prior[index];
+    const cost = contentContextChars(content);
+    if (cost > remaining) break;
+    retainedPrior.unshift(content);
+    remaining -= cost;
+  }
+  while (retainedPrior.length && retainedPrior[0].role === 'model') retainedPrior.shift();
+
+  return [...retainedPrior, anchored, ...retainedUnits.flat()];
+}
+
 function waitForRetry(ms, signal) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
@@ -369,7 +435,7 @@ export class CodingAgent {
           this.onActivity('Inspecting');
           this.emitEvent('phase_changed', { phase: 'Inspecting project' });
         }
-        const content = await this.#generate(signal);
+        const content = await this.#generate(signal, checkpoint);
         const parts = content.parts || [];
         const calls = parts.filter((part) => part.functionCall).map((part) => part.functionCall);
         this.history.push(content);
@@ -493,7 +559,7 @@ export class CodingAgent {
     }
   }
 
-  async #generate(signal) {
+  async #generate(signal, currentRequestIndex) {
     if (!this.resolvedModel) {
       this.resolvedModel = await resolveApiModel(this.model, {
         apiKey: this.apiKey,
@@ -506,12 +572,13 @@ export class CodingAgent {
     const generationConfig = { temperature: 0.2 };
     if (thinkingConfig) generationConfig.thinkingConfig = thinkingConfig;
 
+    let contextChars = MAX_REQUEST_CONTEXT_CHARS;
     const request = {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: systemPrompt(this.displayWorkspace) }] },
-        contents: this.history,
+        contents: requestContents(this.history, currentRequestIndex, contextChars),
         tools: [{ functionDeclarations }],
         generationConfig
       }),
@@ -536,6 +603,19 @@ export class CodingAgent {
       if (!response.ok) {
         const detail = body?.error?.message || `${response.status} ${response.statusText}`;
         const error = new Error(`Model request failed: ${detail}`);
+        const contextLimit = (response.status === 400 || response.status === 413)
+          && /(?:context|token|input|request).*(?:limit|length|large|long|exceed)|(?:too many|too much).*(?:token|input)/i.test(detail);
+        if (contextLimit && contextChars > CONTEXT_RETRY_CHARS) {
+          contextChars = CONTEXT_RETRY_CHARS;
+          request.body = JSON.stringify({
+            systemInstruction: { parts: [{ text: systemPrompt(this.displayWorkspace) }] },
+            contents: requestContents(this.history, currentRequestIndex, contextChars),
+            tools: [{ functionDeclarations }],
+            generationConfig
+          });
+          lastError = error;
+          continue;
+        }
         if (!RETRYABLE_STATUS.has(response.status) || attempt === MAX_MODEL_RETRIES) throw error;
         lastError = error;
         await waitForRetry(RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length - 1)], signal);
