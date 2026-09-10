@@ -16,6 +16,18 @@ All notable changes to the `antigyc` npm package are documented here.
 - Make project task checkpoint creation atomic so concurrent `antigyc` processes cannot both begin autonomous work against the same project state.
 - Reject missing CLI option values before they can consume a following flag, and report invalid auth/reasoning environment configuration directly instead of falling through to a misleading backend error.
 - Keep post-publication temporary manifest/staging cleanup best-effort so cleanup failures cannot report a successfully applied project change as a failed task.
+- Added OS-level command sandboxing for direct API command execution, filtered child-process environments, process-tree termination, stricter provider provenance/install verification, and hardened resumable staging paths.
+- Switched Google subscription prompt transport to the official Antigravity `stream-json` stdin protocol, removing the Windows command-line-length failure mode for long conversations while keeping provider event output internal.
+- Added ESLint, enforced coverage thresholds, expanded Windows/macOS/Linux CI across supported Node 20/22/24 lines, and split reusable release validation from the npm publishability dry-run.
+- Hardened Office/archive parsing, ranged large-file reads, secret-file exclusions, validation discovery, error sanitization, provider repair rollback, and transactional publication race checks.
+
+## 0.1.2 - 2026-09-10
+
+### Changed
+
+- Added the initial live agent event-streaming workflow that shipped in the published `0.1.2` package.
+- Expanded the beginner-oriented README and quick-start guidance.
+- Bumped package, lockfile, and release-readiness metadata from `0.1.1` to `0.1.2`.
 
 ## 0.1.1 - 2026-09-09
 

@@ -184,7 +184,7 @@ test('direct API forces a post-edit verification pass before accepting a final a
     tools: {
       execute: async (name) => {
         toolCalls.push(name);
-        return name === 'write_file' ? 'Wrote app.js.' : '1: updated';
+        return name === 'write_file' ? 'Updated app.js.' : 'Checks passed.';
       }
     },
     fetchImpl: async (_url, options) => {
@@ -195,15 +195,55 @@ test('direct API forces a post-edit verification pass before accepting a final a
         : calls === 2
           ? [{ text: 'Done.' }]
           : calls === 3
-            ? [{ functionCall: { name: 'read_file', args: { path: 'app.js' } } }]
+            ? [{ functionCall: { name: 'run_command', args: { command: 'npm test' } } }]
             : [{ text: 'Updated and verified.' }];
       return { ok: true, status: 200, async json() { return { candidates: [{ content: { role: 'model', parts } }] }; } };
     }
   });
 
   assert.equal(await agent.prompt('update app.js'), 'Updated and verified.');
-  assert.deepEqual(toolCalls, ['write_file', 'read_file']);
+  assert.deepEqual(toolCalls, ['write_file', 'run_command']);
   assert.match(JSON.stringify(requestBodies[2].contents), /post-edit verification pass/);
+});
+
+test('direct API does not accept read_file or git_diff alone as post-edit verification', async () => {
+  let calls = 0;
+  const toolCalls = [];
+  const agent = new CodingAgent({
+    workspace: process.cwd(),
+    displayWorkspace: process.cwd(),
+    apiKey: 'test-key',
+    model: 'gemini-3.8-flash',
+    tools: {
+      execute: async (name) => {
+        toolCalls.push(name);
+        if (name === 'write_file') return 'Updated app.js.';
+        if (name === 'read_file') return 'updated';
+        return 'diff --git a/app.js b/app.js';
+      }
+    },
+    fetchImpl: async () => {
+      calls += 1;
+      const parts = calls === 1
+        ? [{ functionCall: { name: 'write_file', args: { path: 'app.js', content: 'updated' } } }]
+        : calls === 2
+          ? [{ text: 'Done.' }]
+          : calls === 3
+            ? [{ functionCall: { name: 'read_file', args: { path: 'app.js' } } }]
+            : calls === 4
+              ? [{ text: 'Checked the file.' }]
+              : calls === 5
+                ? [{ functionCall: { name: 'git_diff', args: {} } }]
+                : [{ text: 'Checked the diff.' }];
+      return { ok: true, status: 200, async json() { return { candidates: [{ content: { role: 'model', parts } }] }; } };
+    }
+  });
+
+  await assert.rejects(
+    () => agent.prompt('update app.js'),
+    /did not perform a successful post-edit verification pass/
+  );
+  assert.deepEqual(toolCalls, ['write_file', 'read_file', 'git_diff']);
 });
 
 test('direct API refuses completion when the model repeatedly ignores post-edit verification', async () => {
@@ -278,7 +318,7 @@ test('direct API reports every file touched by apply_patch without undefined pat
           { path: 'src/two.js', old_text: 'one', new_text: 'two' }
         ] } } }]
         : calls === 2
-          ? [{ functionCall: { name: 'read_file', args: { path: 'src/one.js' } } }]
+          ? [{ functionCall: { name: 'run_command', args: { command: 'npm test' } } }]
           : [{ text: 'Patched and verified.' }];
       return { ok: true, status: 200, async json() { return { candidates: [{ content: { role: 'model', parts } }] }; } };
     }
@@ -376,6 +416,31 @@ test('direct API compacts old tool exchanges during very long autonomous tasks',
       assert.ok(contents[firstResponse - 1].parts?.some((part) => part.functionCall));
     }
   }
+});
+
+test('direct API reports failed commands as failed events without mislabeling them as tests', async () => {
+  let calls = 0;
+  const events = [];
+  const agent = new CodingAgent({
+    workspace: process.cwd(),
+    displayWorkspace: process.cwd(),
+    apiKey: 'test-key',
+    model: 'gemini-3.8-flash',
+    tools: { execute: async () => 'Command failed.\nexit 1' },
+    onEvent: (event) => events.push(event),
+    fetchImpl: async () => {
+      calls += 1;
+      const parts = calls === 1
+        ? [{ functionCall: { name: 'run_command', args: { command: 'npm test' } } }]
+        : [{ text: 'Command failure handled.' }];
+      return { ok: true, status: 200, async json() { return { candidates: [{ content: { role: 'model', parts } }] }; } };
+    }
+  });
+
+  assert.equal(await agent.prompt('run the check'), 'Command failure handled.');
+  const finished = events.find((event) => event.type === 'command_finished');
+  assert.equal(finished?.success, false);
+  assert.equal(events.some((event) => event.type === 'test_started' || event.type === 'test_finished'), false);
 });
 
 test('direct API retries an explicit provider context-limit error with a smaller history window', async () => {

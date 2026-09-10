@@ -152,7 +152,7 @@ export function plainTerminalText(value) {
       .replace(/__([^_\n]+)__/g, '$1')
       .replace(/~~([^~\n]+)~~/g, '$1')
       .replace(/(^|[\s([{])\*([^*\n]+)\*(?=$|[\s)\]}.!?;,:])/g, '$1$2')
-      .replace(/\\([\\`*_{}\[\]()#+\-.!>])/g, '$1');
+      .replace(/\\([\\`*_{}\x5b\x5d()#+.!>-])/g, '$1');
 
     if (/^\s*\|.*\|\s*$/.test(line)) {
       line = line.trim().replace(/^\|\s*/, '').replace(/\s*\|$/, '');
@@ -186,10 +186,10 @@ export function createGoogleAuthBootstrap(options, {
     markReady() {
       ready = true;
     },
-    async ensure() {
+    async ensure({ signal } = {}) {
       if (resolveAuthMode(options) !== 'google') return false;
       if (ready) return true;
-      await login({ notify });
+      await login({ notify, signal });
       ready = true;
       return true;
     }
@@ -413,11 +413,11 @@ async function runInteractive(options, workspace, settingsStore) {
     if (!resume && existing) {
       throw new Error('An interrupted task is available. Run `resume` to continue it or `task clear` to discard it.');
     }
-    await authBootstrap.ensure();
-    activeIndicator = createActivityIndicator(output);
-    activeIndicator.setPhase('Preparing');
     activeController = new AbortController();
     try {
+      await authBootstrap.ensure({ signal: activeController.signal });
+      activeIndicator = createActivityIndicator(output);
+      activeIndicator.setPhase('Preparing');
       return await executeAgentTask({
         options,
         rl,
@@ -540,11 +540,18 @@ async function runInteractive(options, workspace, settingsStore) {
         continue;
       }
       if (line === 'login') {
+        activeController = new AbortController();
         try {
-          await loginWithGoogle({ notify: (message) => output.write(`${message}\n`) });
+          await loginWithGoogle({
+            notify: (message) => output.write(`${message}\n`),
+            signal: activeController.signal
+          });
           authBootstrap.markReady();
         } catch (error) {
-          output.write(`\nError: ${error instanceof Error ? error.message : String(error)}\n\n`);
+          if (isCancellation(error)) output.write('\nCanceled.\n\n');
+          else output.write(`\nError: ${error instanceof Error ? error.message : String(error)}\n\n`);
+        } finally {
+          activeController = null;
         }
         continue;
       }
@@ -738,7 +745,17 @@ export async function main(argv = process.argv.slice(2)) {
   }
 
   if (parsedOptions.command === 'login') {
-    await loginWithGoogle({ notify: (message) => output.write(`${message}\n`) });
+    const controller = new AbortController();
+    const onSigint = () => controller.abort();
+    process.once('SIGINT', onSigint);
+    try {
+      await loginWithGoogle({
+        notify: (message) => output.write(`${message}\n`),
+        signal: controller.signal
+      });
+    } finally {
+      process.off('SIGINT', onSigint);
+    }
     return;
   }
 
@@ -772,14 +789,15 @@ export async function main(argv = process.argv.slice(2)) {
       throw new Error('An interrupted task is available. Run `antigyc resume` to continue it or `antigyc task clear` to discard it.');
     }
 
-    await authBootstrap.ensure();
-    const attachments = shouldResume ? [] : await resolveAttachmentList(options.attachments, workspace);
     const controller = new AbortController();
-    const indicator = createActivityIndicator(output);
-    indicator.setPhase('Preparing');
+    let indicator = null;
     const onSigint = () => controller.abort();
     process.once('SIGINT', onSigint);
     try {
+      await authBootstrap.ensure({ signal: controller.signal });
+      const attachments = shouldResume ? [] : await resolveAttachmentList(options.attachments, workspace);
+      indicator = createActivityIndicator(output);
+      indicator.setPhase('Preparing');
       const result = await executeAgentTask({
         options,
         rl: null,
@@ -807,7 +825,7 @@ export async function main(argv = process.argv.slice(2)) {
         output.write(`Error: Conversation history was not saved: ${historyError instanceof Error ? historyError.message : String(historyError)}\n`);
       }
     } finally {
-      indicator.stop();
+      indicator?.stop();
       process.off('SIGINT', onSigint);
     }
     return;

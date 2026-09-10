@@ -31,6 +31,8 @@ test('task checkpoint saves and restores only a safe OS-temporary staging contai
     assert.equal(loaded.prompt, 'finish the refactor');
     assert.equal(loaded.container, container);
     assert.equal(loaded.attachments[0].stagedPath, stagedPath);
+    assert.equal('sourcePath' in loaded.attachments[0], false);
+    assert.doesNotMatch(await fs.readFile(store.path, 'utf8'), /notes\.txt.*sourcePath|sourcePath/);
     assert.match(store.path, /tasks/);
     assert.equal(store.path, taskStatePath(workspace, { baseDir: stateRoot }));
     assert.equal(isSafeTaskContainer(container), true);
@@ -113,5 +115,34 @@ test('task checkpoint claim is atomic so concurrent project tasks cannot overwri
     await fs.rm(stateRoot, { recursive: true, force: true });
     await fs.rm(firstContainer, { recursive: true, force: true });
     await fs.rm(secondContainer, { recursive: true, force: true });
+  }
+});
+
+test('task checkpoint rejects a staging path that resolves through a symlink or junction', async (t) => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agyc-task-link-workspace-'));
+  const stateRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'agyc-task-link-state-'));
+  const target = await fs.mkdtemp(path.join(os.tmpdir(), 'agyc-task-link-target-'));
+  const link = path.join(os.tmpdir(), `agyc-stage-link-${process.pid}-${Date.now()}`);
+  try {
+    try {
+      await fs.symlink(target, link, process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (error) {
+      if (error?.code === 'EPERM' || error?.code === 'EACCES') {
+        t.skip('symlink/junction creation is not permitted on this host');
+        return;
+      }
+      throw error;
+    }
+    assert.equal(isSafeTaskContainer(link), false);
+    const store = await createTaskStore(workspace, { baseDir: stateRoot });
+    await assert.rejects(
+      () => store.save({ prompt: 'x', container: link }),
+      /outside the OS temporary staging area/
+    );
+  } finally {
+    await fs.rm(link, { recursive: true, force: true }).catch(() => {});
+    await fs.rm(target, { recursive: true, force: true });
+    await fs.rm(workspace, { recursive: true, force: true });
+    await fs.rm(stateRoot, { recursive: true, force: true });
   }
 });

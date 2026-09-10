@@ -19,7 +19,7 @@ export async function provisionInstall({
   stdout = process.stdout,
   stderr = process.stderr
 } = {}) {
-  let pathResult = { ok: true, changed: false, skipped: true };
+  let pathResult;
   try {
     pathResult = configurePath({ platform, env });
     if (pathResult?.ok && pathResult.changed) {

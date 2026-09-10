@@ -22,9 +22,32 @@ test('global preferences persist outside a project and survive reload', async ()
   }
 });
 
-test('fresh defaults use Google subscription auth with turbo and no approval prompts', () => {
+test('settings accept legacy unversioned data and reject unknown future versions', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-settings-version-'));
+  try {
+    const store = await createSettingsStore({ baseDir: root });
+    await fs.mkdir(path.dirname(store.path), { recursive: true });
+    await fs.writeFile(store.path, JSON.stringify({ model: 'legacy-model', approval: 'ask' }), 'utf8');
+    assert.deepEqual(await store.load(), { model: 'legacy-model', approval: 'ask' });
+    await fs.writeFile(store.path, JSON.stringify({ version: 99, model: 'future-model' }), 'utf8');
+    await assert.rejects(() => store.load(), /Unsupported settings file version 99/);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('fresh defaults use Google subscription auth with high reasoning, approval prompts, and turbo off', () => {
   const merged = mergeRuntimePreferences({ model: null, reasoning: null, auth: null, yes: null, turbo: null }, {}, {});
-  assert.deepEqual(merged, { model: 'gemini-3.8-flash', reasoning: 'auto', auth: 'google', yes: true, turbo: true });
+  assert.deepEqual(merged, { model: 'gemini-3.8-flash', reasoning: 'high', auth: 'google', yes: false, turbo: false });
+});
+
+test('legacy approval ask without a turbo field never escalates to autonomous execution', () => {
+  const merged = mergeRuntimePreferences(
+    { model: null, reasoning: null, auth: null, yes: null, turbo: null },
+    { approval: 'ask' },
+    {}
+  );
+  assert.deepEqual(merged, { model: 'gemini-3.8-flash', reasoning: 'high', auth: 'google', yes: false, turbo: false });
 });
 
 test('CLI values override environment, environment overrides stored preferences', () => {

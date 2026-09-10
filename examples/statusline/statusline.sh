@@ -1,6 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
+# Provider CLI reference only. This is not antigyc runtime UI; see ../README.md.
+
 # ─── ANSI Helpers (Standard 16-color palette only) ───────────────────────────
 R="\033[0m"         # Reset
 B="\033[1m"         # Bold

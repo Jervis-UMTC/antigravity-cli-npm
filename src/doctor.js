@@ -9,6 +9,7 @@ import {
   officialAntigravityBinaryPath,
   providerProvenanceStatus
 } from './google-agent.js';
+import { commandSandboxReadiness } from './command-sandbox.js';
 
 const execFile = promisify(execFileCallback);
 
@@ -41,13 +42,13 @@ async function npmVersion({ platform = process.platform, execImpl = execFile } =
   }
 }
 
-async function networkReachable(fetchImpl = globalThis.fetch) {
+async function networkReachable(url, fetchImpl = globalThis.fetch) {
   if (typeof fetchImpl !== 'function') return false;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 5_000);
   timer.unref?.();
   try {
-    const response = await fetchImpl('https://registry.npmjs.org/antigyc', {
+    const response = await fetchImpl(url, {
       method: 'HEAD',
       signal: controller.signal
     });
@@ -70,6 +71,7 @@ export async function runDoctor({
   fetchImpl = globalThis.fetch,
   runtimeLoader = googleRuntimeStatus,
   provenanceLoader = providerProvenanceStatus,
+  sandboxLoader = commandSandboxReadiness,
   accessImpl = fs.access
 } = {}) {
   const lines = [];
@@ -105,6 +107,14 @@ export async function runDoctor({
   const command = await commandPath('antigyc', { platform, execImpl });
   add('command', command ? 'ok' : 'warn', command ? `path=${command}` : 'antigyc-not-on-PATH; local/npx use can still work');
 
+  const sandbox = await sandboxLoader({ platform }).catch((error) => ({
+    ready: false,
+    errors: [error instanceof Error ? error.message : String(error)]
+  }));
+  add('command-sandbox', sandbox.ready ? 'ok' : 'warn', sandbox.ready
+    ? 'ready'
+    : `not-ready${sandbox.errors?.[0] ? ` ${sandbox.errors[0]}` : ''}`);
+
   const runtime = await runtimeLoader().catch(() => ({ backend: 'broken', account: 'unknown', version: null }));
   const binaryPath = officialAntigravityBinaryPath({ platform, env, home });
   add('provider', runtime.backend === 'ready' ? 'ok' : 'warn', `state=${runtime.backend}${runtime.version ? ` version=${runtime.version}` : ''} path=${binaryPath}`);
@@ -113,8 +123,15 @@ export async function runDoctor({
   const provenance = await provenanceLoader({ binaryPath }).catch(() => ({ status: 'unknown' }));
   add('provider-provenance', provenance.status === 'verified' ? 'ok' : 'warn', `state=${provenance.status}${provenance.sourceUrl ? ` source=${provenance.sourceUrl}` : ''}`);
 
-  const reachable = await networkReachable(fetchImpl);
-  add('network', reachable ? 'ok' : 'warn', reachable ? 'npm-registry=reachable' : 'npm-registry=unreachable');
+  const networkTargets = [
+    ['network-npm', 'https://registry.npmjs.org/antigyc'],
+    ['network-provider', 'https://antigravity-cli-auto-updater-974169037036.us-central1.run.app'],
+    ['network-models', 'https://ai.google.dev/gemini-api/docs/models']
+  ];
+  for (const [name, url] of networkTargets) {
+    const reachable = await networkReachable(url, fetchImpl);
+    add(name, reachable ? 'ok' : 'warn', reachable ? 'reachable' : 'unreachable');
+  }
 
   return { ok: !hardFailure, lines };
 }

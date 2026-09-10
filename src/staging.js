@@ -236,12 +236,42 @@ function changedPaths(before, after) {
   return [...keys].filter((key) => before.get(key) !== after.get(key));
 }
 
-function safeResumeContainer(container) {
+function samePath(left, right) {
+  const a = path.resolve(left);
+  const b = path.resolve(right);
+  return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+async function safeResumeContainer(container) {
   const tempRoot = path.resolve(os.tmpdir());
   const resolved = path.resolve(container);
-  const relative = path.relative(tempRoot, resolved);
-  return path.basename(resolved).startsWith('agyc-stage-') &&
-    relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
+  if (!path.basename(resolved).startsWith('agyc-stage-') || !samePath(path.dirname(resolved), tempRoot)) return false;
+  try {
+    const stat = await fs.lstat(resolved);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) return false;
+    if (typeof process.getuid === 'function' && Number.isInteger(stat.uid) && stat.uid !== process.getuid()) return false;
+    const [realTemp, realContainer] = await Promise.all([fs.realpath(tempRoot), fs.realpath(resolved)]);
+    return path.basename(realContainer).startsWith('agyc-stage-') && samePath(path.dirname(realContainer), realTemp);
+  } catch {
+    return false;
+  }
+}
+
+function validManifestPath(relative) {
+  if (typeof relative !== 'string' || !relative || relative.includes('\0') || path.isAbsolute(relative)) return false;
+  const normalized = path.normalize(relative);
+  if (normalized !== relative || normalized === '.' || normalized === '..' || normalized.startsWith(`..${path.sep}`)) return false;
+  if (excluded(normalized)) return false;
+  return normalized.split(path.sep).every((part) => part && part !== '.' && part !== '..');
+}
+
+function validFingerprint(value) {
+  return value === 'dir' ||
+    (typeof value === 'string' && (
+      /^file:\d+:[a-f0-9]{64}$/.test(value) ||
+      /^other:\d+$/.test(value) ||
+      (value.startsWith('link:') && value.length > 'link:'.length)
+    ));
 }
 
 async function saveManifest(file, manifest) {
@@ -250,10 +280,60 @@ async function saveManifest(file, manifest) {
 
 async function loadManifest(file) {
   const parsed = JSON.parse(await fs.readFile(file, 'utf8'));
-  if (!Array.isArray(parsed) || parsed.some((item) => !Array.isArray(item) || item.length !== 2)) {
+  if (!Array.isArray(parsed)) {
     throw new Error('Interrupted staging baseline is invalid.');
   }
-  return new Map(parsed);
+  const manifest = new Map();
+  const canonicalKeys = new Set();
+  for (const item of parsed) {
+    if (!Array.isArray(item) || item.length !== 2 || !validManifestPath(item[0]) || !validFingerprint(item[1])) {
+      throw new Error('Interrupted staging baseline is invalid.');
+    }
+    const key = item[0];
+    const canonical = process.platform === 'win32' ? key.toLowerCase() : key;
+    if (manifest.has(key) || canonicalKeys.has(canonical)) {
+      throw new Error('Interrupted staging baseline contains duplicate paths.');
+    }
+    manifest.set(key, item[1]);
+    canonicalKeys.add(canonical);
+  }
+  return manifest;
+}
+
+async function assertExpectedPathState(realRoot, relative, expected) {
+  const parts = relative.split(path.sep);
+  for (let index = 1; index <= parts.length; index += 1) {
+    const key = path.join(...parts.slice(0, index));
+    const current = await fingerprint(path.join(realRoot, key));
+    const wanted = expected.get(key) ?? null;
+    if (current !== wanted) {
+      throw new Error(`Project changed outside this session: ${key}. No staged changes were applied.`);
+    }
+  }
+
+  if (expected.get(relative) === 'dir') {
+    const currentSubtree = await buildManifest(path.join(realRoot, relative));
+    const expectedSubtree = new Map();
+    const prefix = `${relative}${path.sep}`;
+    for (const [key, value] of expected) {
+      if (key.startsWith(prefix)) expectedSubtree.set(key.slice(prefix.length), value);
+    }
+    if (!manifestsEqual(currentSubtree, expectedSubtree)) {
+      throw new Error(`Project changed outside this session: ${relative}. No staged changes were applied.`);
+    }
+  }
+}
+
+function updateExpectedState(expected, relative, finalFingerprint) {
+  if (finalFingerprint == null) {
+    expected.delete(relative);
+    const prefix = `${relative}${path.sep}`;
+    for (const key of [...expected.keys()]) {
+      if (key.startsWith(prefix)) expected.delete(key);
+    }
+    return;
+  }
+  expected.set(relative, finalFingerprint);
 }
 
 async function copyForBackup(source, destination) {
@@ -267,12 +347,13 @@ async function copyForBackup(source, destination) {
   });
 }
 
-async function restoreBackup(realRoot, backupRoot, changes, backedUp) {
-  for (const relative of [...changes].sort((a, b) => depth(b) - depth(a))) {
+async function restoreBackup(realRoot, backupRoot, applied, backedUp) {
+  const appliedSet = new Set(applied);
+  for (const relative of [...appliedSet].sort((a, b) => depth(b) - depth(a))) {
     await fs.rm(path.join(realRoot, relative), { recursive: true, force: true });
   }
 
-  for (const relative of [...backedUp].sort((a, b) => depth(a) - depth(b))) {
+  for (const relative of [...backedUp].filter((item) => appliedSet.has(item)).sort((a, b) => depth(a) - depth(b))) {
     const source = path.join(backupRoot, relative);
     const target = path.join(realRoot, relative);
     await copyForBackup(source, target);
@@ -317,11 +398,11 @@ async function applyEntry(stageRoot, realRoot, relative, finalFingerprint) {
   }
 }
 
-export async function createStagingWorkspace(realWorkspace, { container: resumeContainer = null } = {}) {
+export async function createStagingWorkspace(realWorkspace, { container: resumeContainer = null, hooks = {} } = {}) {
   const realRoot = path.resolve(realWorkspace);
   let container;
   if (resumeContainer) {
-    if (!safeResumeContainer(resumeContainer)) {
+    if (!await safeResumeContainer(resumeContainer)) {
       throw new Error('Refusing to resume a task from an invalid staging location.');
     }
     container = path.resolve(resumeContainer);
@@ -376,7 +457,7 @@ export async function createStagingWorkspace(realWorkspace, { container: resumeC
       const staged = [];
       for (let index = 0; index < attachments.length; index += 1) {
         const attachment = attachments[index];
-        const safeName = attachment.name.replace(/[<>:\"/\\|?*\x00-\x1f]/g, '_');
+        const safeName = attachment.name.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_');
         const target = path.join(inputRoot, `${String(index + 1).padStart(2, '0')}-${safeName}`);
         staged.push(await materializeAttachment(attachment, target));
       }
@@ -388,22 +469,21 @@ export async function createStagingWorkspace(realWorkspace, { container: resumeC
       const final = await buildManifest(stageRoot);
       const changes = changedPaths(baseline, final);
       if (changes.length === 0) return [];
+      const expectedReal = new Map(baseline);
 
       for (const relative of changes) {
         throwIfAborted(signal);
-        const current = await fingerprint(path.join(realRoot, relative));
-        const expected = baseline.get(relative) ?? null;
-        if (current !== expected) {
-          throw new Error(`Project changed outside this session: ${relative}. No staged changes were applied.`);
-        }
+        await assertExpectedPathState(realRoot, relative, expectedReal);
       }
 
       await fs.rm(backupRoot, { recursive: true, force: true });
       await fs.mkdir(backupRoot, { recursive: true });
       const backedUp = [];
+      const applied = new Set();
 
       for (const relative of changes) {
         throwIfAborted(signal);
+        await assertExpectedPathState(realRoot, relative, expectedReal);
         const source = path.join(realRoot, relative);
         if (await lstatOrNull(source)) {
           await copyForBackup(source, path.join(backupRoot, relative));
@@ -417,7 +497,11 @@ export async function createStagingWorkspace(realWorkspace, { container: resumeC
           .sort((a, b) => depth(b) - depth(a));
         for (const relative of removals) {
           throwIfAborted(signal);
+          await hooks.beforeApply?.(relative);
+          await assertExpectedPathState(realRoot, relative, expectedReal);
+          applied.add(relative);
           await fs.rm(path.join(realRoot, relative), { recursive: true, force: true });
+          updateExpectedState(expectedReal, relative, null);
         }
 
         const directories = changes
@@ -425,7 +509,11 @@ export async function createStagingWorkspace(realWorkspace, { container: resumeC
           .sort((a, b) => depth(a) - depth(b));
         for (const relative of directories) {
           throwIfAborted(signal);
+          await hooks.beforeApply?.(relative);
+          await assertExpectedPathState(realRoot, relative, expectedReal);
+          applied.add(relative);
           await applyEntry(stageRoot, realRoot, relative, final.get(relative));
+          updateExpectedState(expectedReal, relative, final.get(relative));
         }
 
         const files = changes
@@ -433,10 +521,14 @@ export async function createStagingWorkspace(realWorkspace, { container: resumeC
           .sort((a, b) => depth(a) - depth(b));
         for (const relative of files) {
           throwIfAborted(signal);
+          await hooks.beforeApply?.(relative);
+          await assertExpectedPathState(realRoot, relative, expectedReal);
+          applied.add(relative);
           await applyEntry(stageRoot, realRoot, relative, final.get(relative));
+          updateExpectedState(expectedReal, relative, final.get(relative));
         }
       } catch (error) {
-        await restoreBackup(realRoot, backupRoot, changes, backedUp);
+        await restoreBackup(realRoot, backupRoot, applied, backedUp);
         throw error;
       }
 

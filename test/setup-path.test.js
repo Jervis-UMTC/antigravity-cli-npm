@@ -3,8 +3,7 @@ import test from 'node:test';
 import {
   configureWindowsPath,
   shouldConfigureWindowsPath,
-  windowsNpmBinPath,
-  windowsPathContains
+  windowsNpmBinPath
 } from '../scripts/setup-path.js';
 
 test('Windows npm bin path uses npm prefix and falls back to APPDATA', () => {
@@ -15,14 +14,6 @@ test('Windows npm bin path uses npm prefix and falls back to APPDATA', () => {
   assert.equal(
     windowsNpmBinPath({ APPDATA: 'C:\\Users\\me\\AppData\\Roaming' }),
     'C:\\Users\\me\\AppData\\Roaming\\npm'
-  );
-});
-
-test('PATH matching is case-insensitive and expands Windows environment references', () => {
-  const env = { APPDATA: 'C:\\Users\\Me\\AppData\\Roaming' };
-  assert.equal(
-    windowsPathContains('C:\\Windows;%APPDATA%\\npm', 'c:\\users\\me\\appdata\\roaming\\npm\\', env),
-    true
   );
 });
 

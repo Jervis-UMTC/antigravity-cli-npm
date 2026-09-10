@@ -7,6 +7,9 @@ const MAX_MESSAGES = 200;
 const MODEL_HISTORY_MESSAGES = 30;
 const MAX_MESSAGE_CHARS = 24_000;
 const MODEL_HISTORY_CHARS = 60_000;
+const MAX_MODEL_HISTORY_BYTES = 64 * 1024;
+const MAX_ATTACHMENTS_PER_MESSAGE = 20;
+const HISTORY_VERSION = 1;
 
 function canonicalWorkspace(workspace) {
   const resolved = path.resolve(workspace);
@@ -33,11 +36,10 @@ function normalizeMessages(messages) {
       role: item.role,
       text: trimText(item.text),
       attachments: Array.isArray(item.attachments) ? item.attachments.map((attachment) => ({
-        name: String(attachment.name || ''),
-        path: String(attachment.path || ''),
-        mimeType: String(attachment.mimeType || ''),
-        kind: String(attachment.kind || '')
-      })) : [],
+        name: String(attachment.name || '').slice(0, 256),
+        mimeType: String(attachment.mimeType || '').slice(0, 128),
+        kind: String(attachment.kind || '').slice(0, 32)
+      })).slice(0, MAX_ATTACHMENTS_PER_MESSAGE) : [],
       at: typeof item.at === 'string' ? item.at : new Date().toISOString()
     }))
     .slice(-MAX_MESSAGES);
@@ -60,6 +62,9 @@ export async function createHistoryStore(workspace, { baseDir } = {}) {
     try {
       const raw = await fs.readFile(file, 'utf8');
       const parsed = JSON.parse(raw);
+      if (parsed?.version !== undefined && parsed.version !== HISTORY_VERSION) {
+        throw new Error(`Unsupported conversation history version ${String(parsed.version)}: ${file}`);
+      }
       return normalizeMessages(parsed.messages);
     } catch (error) {
       if (error?.code === 'ENOENT') return [];
@@ -68,7 +73,7 @@ export async function createHistoryStore(workspace, { baseDir } = {}) {
         try {
           await fs.rename(file, backup);
         } catch (backupError) {
-          throw new Error(`Conversation history is invalid and could not be quarantined: ${file}: ${backupError instanceof Error ? backupError.message : String(backupError)}`);
+          throw new Error(`Conversation history is invalid and could not be quarantined: ${file}: ${backupError instanceof Error ? backupError.message : String(backupError)}`, { cause: backupError });
         }
         recoveryNotice = `Conversation history was invalid and was moved to ${backup}. Continuing with a fresh history.`;
         return [];
@@ -84,7 +89,7 @@ export async function createHistoryStore(workspace, { baseDir } = {}) {
       return;
     }
     await writeJsonAtomic(file, {
-      version: 1,
+      version: HISTORY_VERSION,
       workspace: path.resolve(workspace),
       messages: normalized
     });
@@ -124,19 +129,22 @@ export function appendConversationTurn(messages, text, attachments, answer) {
 }
 
 export function conversationForModel(messages) {
-  const normalized = normalizeMessages(messages).slice(-MODEL_HISTORY_MESSAGES);
+  const recent = normalizeMessages(messages).slice(-MODEL_HISTORY_MESSAGES);
   const selected = [];
   let chars = 0;
+  let bytes = 0;
 
-  for (let index = normalized.length - 1; index >= 0; index -= 1) {
-    const message = normalized[index];
+  for (let index = recent.length - 1; index >= 0; index -= 1) {
+    const message = recent[index];
     const attachmentChars = message.attachments.reduce((total, attachment) => (
       total + attachment.name.length + attachment.mimeType.length + attachment.kind.length + 16
     ), 0);
     const cost = message.text.length + attachmentChars + 32;
-    if (selected.length && chars + cost > MODEL_HISTORY_CHARS) break;
+    const messageBytes = Buffer.byteLength(JSON.stringify(message), 'utf8');
+    if (selected.length && (chars + cost > MODEL_HISTORY_CHARS || bytes + messageBytes > MAX_MODEL_HISTORY_BYTES)) break;
     selected.unshift(message);
     chars += cost;
+    bytes += messageBytes;
   }
 
   while (selected.length && selected[0].role === 'assistant') selected.shift();

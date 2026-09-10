@@ -7,11 +7,13 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { createGoogleAuthBootstrap, plainTerminalText, promptLabel } from '../src/cli.js';
+import { commandSandboxReadiness } from '../src/command-sandbox.js';
 import { appendConversationTurn, createHistoryStore } from '../src/history.js';
 import { createStagingWorkspace } from '../src/staging.js';
 import { createTaskStore } from '../src/task-state.js';
 
 const CLI = fileURLToPath(new URL('../bin/agy.js', import.meta.url));
+const COMMAND_SANDBOX_READY = (await commandSandboxReadiness()).ready;
 
 async function startFakeGemini(responder) {
   const requests = [];
@@ -257,6 +259,20 @@ test('normal Google use bootstraps authentication once without a separate login 
   assert.equal(loginCalls, 2);
 });
 
+test('Google auth bootstrap forwards the request AbortSignal to login', async () => {
+  const options = { auth: 'google' };
+  const controller = new AbortController();
+  let receivedSignal = null;
+  const bootstrap = createGoogleAuthBootstrap(options, {
+    login: async ({ signal }) => {
+      receivedSignal = signal;
+    }
+  });
+
+  assert.equal(await bootstrap.ensure({ signal: controller.signal }), true);
+  assert.equal(receivedSignal, controller.signal);
+});
+
 test('message shorthand sends one-shot text and capital M selects a model', async () => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-message-cli-'));
   const stateRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-message-state-'));
@@ -277,7 +293,7 @@ test('message shorthand sends one-shot text and capital M selects a model', asyn
   }
 });
 
-test('one-shot editing works in a folder with no Git repository', async () => {
+test('one-shot editing works in a folder with no Git repository', { skip: !COMMAND_SANDBOX_READY }, async () => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-nogit-cli-'));
   const stateRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-nogit-state-'));
   await fs.writeFile(path.join(workspace, 'app.txt'), 'before\n', 'utf8');
@@ -288,8 +304,8 @@ test('one-shot editing works in a folder with no Git repository', async () => {
       return {
         body: {
           candidates: [{ content: { role: 'model', parts: [{ functionCall: {
-            name: 'read_file',
-            args: { path: 'app.txt' }
+            name: 'run_process',
+            args: { executable: process.execPath, args: ['-e', 'process.exit(0)'] }
           } }] } }]
         }
       };
@@ -299,7 +315,7 @@ test('one-shot editing works in a folder with no Git repository', async () => {
 
   try {
     await assert.rejects(() => fs.stat(path.join(workspace, '.git')), /ENOENT/);
-    const result = await runCli(workspace, stateRoot, fake.baseUrl, ['-p', 'update app.txt']);
+    const result = await runCli(workspace, stateRoot, fake.baseUrl, ['--yes', '-p', 'update app.txt']);
 
     assert.equal(result.code, 0, result.stderr);
     assert.equal(result.stdout.trim(), 'updated');
@@ -402,7 +418,7 @@ test('persisted conversation is restored on the next CLI launch', async () => {
   }
 });
 
-test('turbo flag allows one-shot command execution without an approval prompt', async () => {
+test('turbo flag allows one-shot command execution without an approval prompt', { skip: !COMMAND_SANDBOX_READY }, async () => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-turbo-cli-'));
   const stateRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-turbo-state-'));
   const fake = await startFakeGemini((index) => {
@@ -431,7 +447,7 @@ test('turbo flag allows one-shot command execution without an approval prompt', 
   }
 });
 
-test('persisted global preferences control model, reasoning, auth, and approval on a later process', async () => {
+test('persisted global preferences control model, reasoning, and auth on a later process', async () => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-settings-cli-'));
   const stateRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-settings-cli-state-'));
   await fs.writeFile(path.join(stateRoot, 'settings.json'), JSON.stringify({
@@ -441,19 +457,9 @@ test('persisted global preferences control model, reasoning, auth, and approval 
     auth: 'api-key',
     approval: 'yes'
   }), 'utf8');
-  const fake = await startFakeGemini((index, body, request) => {
-    if (index === 0) {
-      assert.match(request.url, /models\/gemini-3\.8-flash:generateContent/);
-      assert.equal(body.generationConfig.thinkingConfig.thinkingBudget, 8192);
-      return {
-        body: {
-          candidates: [{ content: { role: 'model', parts: [{ functionCall: {
-            name: 'run_command',
-            args: { command: 'node -e "require(\'fs\').writeFileSync(\'preference.txt\',\'persisted\')"' }
-          } }] } }]
-        }
-      };
-    }
+  const fake = await startFakeGemini((_index, body, request) => {
+    assert.match(request.url, /models\/gemini-3\.8-flash:generateContent/);
+    assert.equal(body.generationConfig.thinkingConfig.thinkingBudget, 8192);
     return modelText('preferences applied');
   });
 
@@ -461,7 +467,6 @@ test('persisted global preferences control model, reasoning, auth, and approval 
     const result = await runCli(workspace, stateRoot, fake.baseUrl, ['-p', 'use saved settings'], { explicitAuth: false });
     assert.equal(result.code, 0, result.stderr);
     assert.equal(result.stdout.trim(), 'preferences applied');
-    assert.equal(await fs.readFile(path.join(workspace, 'preference.txt'), 'utf8'), 'persisted');
   } finally {
     await fake.close();
     await fs.rm(workspace, { recursive: true, force: true });

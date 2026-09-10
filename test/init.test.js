@@ -15,6 +15,8 @@ test('init creates only the explicitly requested AGENTS.md and never overwrites 
     await fs.writeFile(target, 'custom\n', 'utf8');
     await assert.rejects(() => initializeProject(root), /already exists/);
     assert.equal(await fs.readFile(target, 'utf8'), 'custom\n');
+    await assert.rejects(() => initializeProject(root, { fileName: '../outside.md' }), /simple file name/);
+    await assert.rejects(() => initializeProject(root, { fileName: 'nested/AGENTS.md' }), /simple file name/);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }

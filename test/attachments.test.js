@@ -33,6 +33,16 @@ test('text documents are attached as text and images as multimodal data', async 
   }
 });
 
+test('unknown binary data without NUL bytes is not misclassified as text', async () => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-binary-detect-'));
+  try {
+    await fs.writeFile(path.join(workspace, 'blob.unknown'), Buffer.from([0xff, 0xfe, 0xfd, 0xfc, 0x80, 0x81]));
+    await assert.rejects(() => resolveAttachment('blob.unknown', workspace), /Unsupported attachment type/);
+  } finally {
+    await fs.rm(workspace, { recursive: true, force: true });
+  }
+});
+
 test('PDF is accepted as a document attachment', async () => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-pdf-'));
   try {
@@ -62,6 +72,21 @@ test('DOCX text is extracted safely and materialized as external text for the he
     const materialized = await materializeAttachment(attachment, path.join(workspace, 'copy'));
     assert.match(materialized.stagedPath, /\.txt$/);
     assert.match(await fs.readFile(materialized.stagedPath, 'utf8'), /requirements\.docx/);
+  } finally {
+    await fs.rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test('out-of-range XML numeric entities are replaced instead of throwing', async () => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-docx-invalid-entity-'));
+  try {
+    const file = path.join(workspace, 'entity.docx');
+    await writeZip(file, {
+      '[Content_Types].xml': '<Types/>',
+      'word/document.xml': '<w:document><w:body><w:p><w:r><w:t>before &#x110000; after &#55296;</w:t></w:r></w:p></w:body></w:document>'
+    });
+    const text = await extractOfficeText(file, '.docx');
+    assert.match(text, /before \uFFFD after \uFFFD/);
   } finally {
     await fs.rm(workspace, { recursive: true, force: true });
   }
@@ -141,6 +166,25 @@ test('direct API rejects oversized inline binary attachments before base64 expan
       () => directAttachmentParts([attachment]),
       /Combined PDF\/image attachments are too large for direct API inline mode/
     );
+  } finally {
+    await fs.rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test('Office ZIP central-directory bounds must match the declared directory exactly', async () => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-office-central-dir-'));
+  try {
+    const file = path.join(workspace, 'bad-central.docx');
+    await writeZip(file, {
+      '[Content_Types].xml': '<Types/>',
+      'word/document.xml': '<w:document><w:body><w:p><w:r><w:t>hello</w:t></w:r></w:p></w:body></w:document>'
+    });
+    const buffer = await fs.readFile(file);
+    const end = buffer.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+    assert.ok(end >= 0);
+    buffer.writeUInt32LE(buffer.readUInt32LE(end + 12) - 1, end + 12);
+    await fs.writeFile(file, buffer);
+    await assert.rejects(() => extractOfficeText(file, '.docx'), /ZIP directory is invalid|ZIP directory is malformed/);
   } finally {
     await fs.rm(workspace, { recursive: true, force: true });
   }

@@ -65,7 +65,18 @@ async function looksText(file) {
     const buffer = Buffer.alloc(8192);
     const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
     if (bytesRead === 0) return true;
-    return !buffer.subarray(0, bytesRead).includes(0);
+    const sample = buffer.subarray(0, bytesRead);
+    if (sample.includes(0)) return false;
+    try {
+      new TextDecoder('utf-8', { fatal: true }).decode(sample);
+    } catch {
+      return false;
+    }
+    let controls = 0;
+    for (const byte of sample) {
+      if ((byte < 0x20 && byte !== 0x09 && byte !== 0x0a && byte !== 0x0d) || byte === 0x7f) controls += 1;
+    }
+    return controls / sample.length <= 0.02;
   } finally {
     await handle.close();
   }
@@ -85,17 +96,18 @@ function validateZipExpansion(buffer) {
   const entries = buffer.readUInt16LE(end + 10);
   const centralSize = buffer.readUInt32LE(end + 12);
   const centralOffset = buffer.readUInt32LE(end + 16);
+  const centralEnd = centralOffset + centralSize;
   if (entries === 0xffff || centralOffset === 0xffffffff || centralSize === 0xffffffff) {
     throw new Error('ZIP64 Office documents are not supported.');
   }
-  if (entries > MAX_ZIP_ENTRIES || centralOffset + centralSize > buffer.length) {
+  if (entries > MAX_ZIP_ENTRIES || centralEnd !== end) {
     throw new Error('Office document ZIP directory is invalid or too large.');
   }
 
   let offset = centralOffset;
   let total = 0;
   for (let index = 0; index < entries; index += 1) {
-    if (offset + 46 > buffer.length || buffer.readUInt32LE(offset) !== 0x02014b50) {
+    if (offset + 46 > centralEnd || buffer.readUInt32LE(offset) !== 0x02014b50) {
       throw new Error('Office document ZIP directory is malformed.');
     }
     const uncompressed = buffer.readUInt32LE(offset + 24);
@@ -107,14 +119,28 @@ function validateZipExpansion(buffer) {
     if (total > MAX_OFFICE_UNCOMPRESSED_BYTES) {
       throw new Error('Office document expands beyond the 50 MB safety limit.');
     }
-    offset += 46 + nameLength + extraLength + commentLength;
+    const nextOffset = offset + 46 + nameLength + extraLength + commentLength;
+    if (nextOffset > centralEnd) throw new Error('Office document ZIP directory is malformed.');
+    offset = nextOffset;
   }
+  if (offset !== centralEnd) throw new Error('Office document ZIP directory is malformed.');
 }
 
 function decodeXmlEntities(value) {
+  const decodeNumericEntity = (match, digits, radix) => {
+    const codePoint = Number.parseInt(digits, radix);
+    if (!Number.isInteger(codePoint) || codePoint < 0 || codePoint > 0x10ffff || (codePoint >= 0xd800 && codePoint <= 0xdfff)) {
+      return '\uFFFD';
+    }
+    try {
+      return String.fromCodePoint(codePoint);
+    } catch {
+      return '\uFFFD';
+    }
+  };
   return String(value || '')
-    .replace(/&#x([0-9a-f]+);/gi, (_match, hex) => String.fromCodePoint(Number.parseInt(hex, 16)))
-    .replace(/&#(\d+);/g, (_match, decimal) => String.fromCodePoint(Number.parseInt(decimal, 10)))
+    .replace(/&#x([0-9a-f]+);/gi, (match, hex) => decodeNumericEntity(match, hex, 16))
+    .replace(/&#(\d+);/g, (match, decimal) => decodeNumericEntity(match, decimal, 10))
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
@@ -207,8 +233,12 @@ export async function extractOfficeText(file, extension = path.extname(file).toL
   } catch {
     throw new Error(`Could not read Office document: ${path.basename(file)}`);
   }
+  const inflated = Object.values(entries);
+  if (inflated.length > MAX_ZIP_ENTRIES || inflated.reduce((total, entry) => total + entry.length, 0) > MAX_OFFICE_UNCOMPRESSED_BYTES) {
+    throw new Error('Office document expands beyond the 50 MB safety limit.');
+  }
 
-  let text = '';
+  let text;
   if (extension === '.docx') text = docxText(entries);
   else if (extension === '.pptx') text = pptxText(entries);
   else if (extension === '.xlsx') text = xlsxText(entries);
@@ -337,7 +367,6 @@ export async function directAttachmentParts(attachments = [], { maxTextChars = M
 export function attachmentSummary(attachments = []) {
   return attachments.map((attachment) => ({
     name: attachment.name,
-    path: attachment.sourcePath,
     mimeType: attachment.mimeType,
     kind: attachment.kind
   }));

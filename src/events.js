@@ -9,7 +9,6 @@ const SAFE_EVENT_TYPES = new Set([
   'verification',
   'phase_changed'
 ]);
-
 const FILE_EVENT_TYPES = new Set(['file_created', 'file_modified', 'file_deleted']);
 const SUCCESS_EVENT_TYPES = new Set(['command_finished', 'test_finished']);
 

@@ -107,7 +107,7 @@ const functionDeclarations = [
   },
   {
     name: 'apply_patch',
-    description: 'Apply multiple exact text hunks atomically across existing project files. Prefer this for coordinated focused edits; use write_file for new files.',
+    description: 'Apply multiple exact text hunks after validating all hunks across existing project files. Writes use best-effort rollback if a later write fails. Prefer this for coordinated focused edits; use write_file for new files.',
     parameters: {
       type: 'OBJECT',
       properties: {
@@ -458,7 +458,7 @@ export class CodingAgent {
               verificationNudges += 1;
               this.history.push({
                 role: 'user',
-                parts: [{ text: 'Before finalizing, perform a post-edit verification pass. Inspect the changed files or diff and run the most relevant available test, build, lint, typecheck, or other check. If no runnable check exists, inspect the changed result directly and then return the final response.' }]
+                parts: [{ text: 'Before finalizing, perform a post-edit verification pass. Inspect the changed files or diff as needed, then run the most relevant available test, build, lint, typecheck, syntax check, or other executable validation. A file read or diff alone does not count as verification.' }]
               });
               continue;
             }
@@ -477,11 +477,12 @@ export class CodingAgent {
 
         const callNames = new Set(calls.map((call) => call.name));
         const mutationCalls = ['write_file', 'replace_in_file', 'apply_patch', 'delete_path'];
-        const verificationCalls = ['run_command', 'run_process', 'git_diff', 'read_file'];
+        const verificationCalls = ['run_command', 'run_process'];
+        const reviewCalls = ['git_diff', 'read_file'];
         if (mutationCalls.some((name) => callNames.has(name))) {
           this.onActivity('Editing files');
           this.emitEvent('phase_changed', { phase: 'Editing files' });
-        } else if (latestMutation >= 0 && verificationCalls.some((name) => callNames.has(name))) {
+        } else if (latestMutation >= 0 && (verificationCalls.some((name) => callNames.has(name)) || reviewCalls.some((name) => callNames.has(name)))) {
           this.onActivity('Verifying changes');
           this.emitEvent('verification', { phase: 'Verifying changes' });
         } else if (callNames.has('run_command') || callNames.has('run_process')) {
@@ -527,7 +528,7 @@ export class CodingAgent {
           }
           if (toolSucceeded && ['write_file', 'replace_in_file', 'apply_patch', 'delete_path'].includes(call.name)) {
             latestMutation = operationIndex;
-          } else if (toolSucceeded && ['run_command', 'run_process', 'git_diff', 'read_file'].includes(call.name) && latestMutation >= 0) {
+          } else if (toolSucceeded && verificationCalls.includes(call.name) && latestMutation >= 0) {
             latestVerification = operationIndex;
           }
 

@@ -31,16 +31,6 @@ export function windowsNpmBinPath(env = process.env) {
   return appData ? path.win32.join(appData, 'npm') : null;
 }
 
-export function windowsPathContains(pathValue, target, env = process.env) {
-  const expected = normalizeWindowsPath(target, env);
-  if (!expected) return false;
-  return String(pathValue || '')
-    .split(';')
-    .map((entry) => normalizeWindowsPath(entry, env))
-    .filter(Boolean)
-    .includes(expected);
-}
-
 export function shouldConfigureWindowsPath({
   platform = process.platform,
   env = process.env,
