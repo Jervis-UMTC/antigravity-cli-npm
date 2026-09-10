@@ -970,6 +970,8 @@ antigyc C:\project> clear
 
 History stores user messages, final replies, timestamps, and attachment metadata such as attachment names/paths. It does not store internal reasoning or the tool-by-tool execution stream.
 
+Long conversations are bounded automatically. `antigyc` keeps up to the latest 200 saved messages for project history, but only a recent size-bounded subset is sent back to the model on each new request. Very long individual messages preserve both their beginning and ending, and direct API-key tasks compact older completed tool exchanges as whole call/response units. If the direct model explicitly rejects a request for exceeding its context/token limit, `antigyc` retries once with a smaller context window instead of immediately failing the session.
+
 ### Relocate external state
 
 Set `ANTIGRAVITY_HOME` before starting `antigyc`:
