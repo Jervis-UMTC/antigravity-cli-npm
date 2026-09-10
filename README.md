@@ -244,30 +244,21 @@ antigyc --attach "C:\docs\requirements.pdf" -m "implement this specification and
 
 `antigyc` intentionally stays close to an ordinary command prompt. It does not show an AI dashboard, tool stream, model badge, reasoning panel, cards, or animated UI. A request may briefly show a single plain activity line such as `Preparing...`, `Working...`, or `Checking...`, which disappears before the final response.
 
-The agent performs project edits in a private OS-temporary staging copy and publishes the completed file state back to the real project only after the instruction succeeds. Normal responses are instructed to avoid emojis and end with a final `Summary` section.
+The agent performs project edits in a private OS-temporary staging copy and publishes the completed file state back to the real project only after the instruction succeeds. Normal responses are rendered as plain terminal text: Markdown headings, emphasis markers, backticks, fenced code markers, tables, blockquotes, and Markdown link syntax are not shown. Responses avoid emojis and end with a final `Summary` section.
 
 > This repository is an npm implementation. It is not the proprietary Google Antigravity CLI binary.
 
 ## Live agent workflow
 
-While working, `antigyc` reports safe progress events from the coding workflow. The output stays plain terminal text and does not expose private reasoning, provider internals, or secrets.
+While working, `antigyc` converts internal coding-workflow events into the same single transient plain-text activity line described above. File names, command arguments, provider internals, secrets, and private reasoning are not streamed into normal terminal output.
 
-Typical progress looks like:
-
-```text
-Inspecting project
-Editing: src/app.js
-Created: src/auth/session.js
-Running: npm test
-Verification: checking changes
-Tests passed
-```
+The visible line may move through generic phases such as `Inspecting...`, `Working...`, `Checking...`, and `Applying changes...`; it is erased before the final response or error is printed.
 
 The workflow is:
 
 1. Inspect the project.
 2. Make changes in the protected staging workspace.
-3. Report safe file and command activity.
+3. Update the generic transient activity phase as work progresses.
 4. Run available checks and tests.
 5. Repair failures when possible.
 6. Apply completed changes only after verification succeeds.

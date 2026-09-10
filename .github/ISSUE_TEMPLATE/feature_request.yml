@@ -1,5 +1,5 @@
-name:  Antigravity CLI - Feature Request
-description: Propose a new feature or improvement for Antigravity CLI
+name: antigyc - Feature Request
+description: Propose a new feature or improvement for the antigyc npm CLI
 title: "[Feature Request]: "
 labels: ["type: feature request"]
 assignees: []
@@ -7,15 +7,14 @@ body:
   - type: markdown
     attributes:
       value: |
-        > [!IMPORTANT]
-        > Thanks for taking the time to fill out this bug report!
-        >
-        > Please search **[existing issues](https://github.com/google-antigravity/antigravity-cli/issues)** to see if a similar feature has been requested
+        Thanks for suggesting an improvement.
+
+        Please search existing issues in Jervis-UMTC/antigravity-cli-npm before opening a duplicate request.
   - type: textarea
     id: pitch
     attributes:
       label: Is your feature request related to a specific problem?
-      description: A clear and concise description of what the problem is
+      description: Describe the problem or limitation.
       placeholder: Describe the problem or limitation...
     validations:
       required: false
@@ -23,7 +22,7 @@ body:
     id: solution
     attributes:
       label: Describe the solution you'd like
-      description: A clear and concise description of what you want to happen
+      description: Describe what you want to happen.
       placeholder: Describe your proposed feature or improvement...
     validations:
       required: true
@@ -31,12 +30,12 @@ body:
     id: alternatives
     attributes:
       label: Describe alternatives you've considered
-      description: A clear and concise description of any alternative solutions or features you've considered
-      placeholder: What other solutions did you think of?
+      description: Describe other solutions or approaches you considered.
+      placeholder: What other solutions did you consider?
     validations:
       required: false
   - type: textarea
     id: additional-context
     attributes:
       label: Additional context
-      description: Add any other context, CLI output examples, screenshots about the feature request here
+      description: Add any other context, CLI output examples, or screenshots that help explain the request.

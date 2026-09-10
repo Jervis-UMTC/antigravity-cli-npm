@@ -56,6 +56,7 @@ test('release metadata is explicit and production files include hardening module
   assert.match(workflow, /AGYC_SKIP_PROVIDER_INSTALL/);
   assert.match(workflow, /AGYC_SKIP_PATH_SETUP/);
   assert.match(pkg.scripts.check, /src\/doctor\.js/);
+  assert.match(pkg.scripts.check, /src\/events\.js/);
   assert.match(pkg.scripts.check, /src\/task-state\.js/);
 });
 

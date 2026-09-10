@@ -2,6 +2,15 @@
 
 All notable changes to the `antigyc` npm package are documented here.
 
+## Unreleased
+
+### Changed
+
+- Hardened internal agent progress events so generic transient activity phases do not expose command arguments or provider internals.
+- Corrected event success reporting for failed or denied commands and file-path reporting for multi-file patches.
+- Expanded release syntax checks to include the event module and aligned repository issue templates with the public `antigyc` command and this repository.
+- Render final CLI answers as plain terminal text and suppress Markdown formatting markers even if a provider returns them.
+
 ## 0.1.1 - 2026-09-09
 
 ### Changed
