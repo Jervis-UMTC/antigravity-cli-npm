@@ -5,10 +5,14 @@ const TEMPLATE = `# Project instructions\n\nDocument project-specific coding con
 
 export async function initializeProject(workspace, { fileName = 'AGENTS.md' } = {}) {
   const root = path.resolve(workspace);
-  const target = path.join(root, fileName);
+  const requested = String(fileName || '').trim();
+  if (!requested || path.isAbsolute(requested) || path.basename(requested) !== requested || requested === '.' || requested === '..') {
+    throw new Error('Project instruction filename must be a simple file name inside the project root.');
+  }
+  const target = path.join(root, requested);
   try {
     await fs.access(target);
-    throw new Error(`${fileName} already exists. It was not overwritten.`);
+    throw new Error(`${requested} already exists. It was not overwritten.`);
   } catch (error) {
     if (error?.code !== 'ENOENT') throw error;
   }

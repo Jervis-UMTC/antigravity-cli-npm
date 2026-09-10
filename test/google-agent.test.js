@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -6,7 +7,8 @@ import test from 'node:test';
 import { discoverApiModels } from '../src/agent.js';
 import {
   buildAntigravityArgs,
-  buildReasoningDefaults,
+  buildAntigravityStreamArgs,
+  buildAntigravityStreamInput,
   discoverGoogleModels,
   discoverOfficialAntigravityModels,
   discoverPublicGoogleModels,
@@ -21,6 +23,7 @@ import {
   providerProvenanceStatus,
   probeOfficialAntigravityBinary,
   parseAntigravityJson,
+  parseAntigravityStreamJson,
   parseAntigravityModels,
   parsePublicGoogleModels,
   resolveAntigravityModel,
@@ -33,6 +36,8 @@ test('google account environment removes competing credentials but preserves clo
   const env = googleAccountEnv({
     GEMINI_API_KEY: 'secret',
     GOOGLE_API_KEY: 'secret-2',
+    GITHUB_TOKEN: 'secret-3',
+    AWS_SECRET_ACCESS_KEY: 'secret-4',
     GOOGLE_GENAI_USE_VERTEXAI: 'true',
     GOOGLE_APPLICATION_CREDENTIALS: '/tmp/key.json',
     GOOGLE_CLOUD_PROJECT: 'example-project',
@@ -41,6 +46,8 @@ test('google account environment removes competing credentials but preserves clo
 
   assert.equal(env.GEMINI_API_KEY, undefined);
   assert.equal(env.GOOGLE_API_KEY, undefined);
+  assert.equal(env.GITHUB_TOKEN, undefined);
+  assert.equal(env.AWS_SECRET_ACCESS_KEY, undefined);
   assert.equal(env.GOOGLE_GENAI_USE_VERTEXAI, undefined);
   assert.equal(env.GOOGLE_APPLICATION_CREDENTIALS, undefined);
   assert.equal(env.GOOGLE_CLOUD_PROJECT, 'example-project');
@@ -72,39 +79,51 @@ test('official Antigravity backend path is isolated from the npm agy shim', () =
   );
   assert.equal(
     officialAntigravityBinaryPath({ platform: 'win32', env: { ANTIGRAVITY_CLI_BINARY: 'D:\\provider\\agy.exe' } }),
-    path.resolve('D:\\provider\\agy.exe')
+    path.win32.normalize('D:\\provider\\agy.exe')
+  );
+  assert.throws(
+    () => officialAntigravityBinaryPath({ platform: 'win32', env: { ANTIGRAVITY_CLI_BINARY: 'provider\\agy.exe' } }),
+    /must be an absolute path/
   );
 });
 
 test('official Antigravity backend auto-install stays outside PATH and honors its isolated target', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-official-install-'));
   const binaryPath = path.join(root, 'provider', 'agy.exe');
-  let invocation = null;
+  const provider = Buffer.from('verified-provider-binary', 'utf8');
+  const releaseSha512 = crypto.createHash('sha512').update(provider).digest('hex');
+  const manifestUrl = 'https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/windows_amd64.json';
+  const releaseUrl = 'https://storage.googleapis.com/antigravity-public/antigravity-cli/1.2.3/windows-x64/cli_windows_x64.exe';
+  const requests = [];
   try {
     const installed = await installOfficialAntigravityCli({
       platform: 'win32',
+      arch: 'x64',
       binaryPath,
-      fetchImpl: async () => ({
-        ok: true,
-        status: 200,
-        async text() { return '@echo off\r\n'; }
-      }),
-      captureImpl: async (executable, args) => {
-        invocation = { executable, args };
-        await fs.mkdir(path.dirname(binaryPath), { recursive: true });
-        await fs.writeFile(binaryPath, 'provider', 'utf8');
-        return { code: 0, stdout: '', stderr: '' };
+      fetchImpl: async (url, options) => {
+        requests.push({ url: String(url), options });
+        const body = String(url) === manifestUrl
+          ? Buffer.from(JSON.stringify({ version: '1.2.3', url: releaseUrl, sha512: releaseSha512 }), 'utf8')
+          : provider;
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => String(body.length) },
+          async arrayBuffer() { return body; }
+        };
       }
     });
     assert.equal(installed, binaryPath);
-    assert.equal(invocation.executable, 'cmd.exe');
-    assert.deepEqual(invocation.args.slice(0, 3), ['/d', '/c', invocation.args[2]]);
-    assert.match(invocation.args[2], /agy-google-backend-.*\.cmd$/);
-    assert.deepEqual(invocation.args.slice(3), ['--dir', path.dirname(binaryPath), '--skip-path', '--skip-aliases']);
+    assert.equal(await fs.readFile(binaryPath, 'utf8'), provider.toString('utf8'));
+    assert.deepEqual(requests.map((request) => request.url), [manifestUrl, releaseUrl]);
+    assert.equal(requests.every((request) => request.options.redirect === 'error'), true);
     const provenance = await providerProvenanceStatus({ binaryPath });
     assert.equal(provenance.status, 'verified');
-    assert.equal(provenance.sourceUrl, 'https://antigravity.google/cli/install.cmd');
-    assert.match(provenance.installerSha256, /^[a-f0-9]{64}$/);
+    assert.equal(provenance.sourceUrl, manifestUrl);
+    assert.equal(provenance.releaseUrl, releaseUrl);
+    assert.equal(provenance.releaseSha512, releaseSha512);
+    assert.equal(provenance.installerSha256, null);
+    assert.equal(provenance.providerVersion, '1.2.3');
     assert.equal(path.basename(officialAntigravityMetadataPath({ binaryPath })), 'provider.json');
 
     let installs = 0;
@@ -115,6 +134,42 @@ test('official Antigravity backend auto-install stays outside PATH and honors it
       probeImpl: async () => ({ ready: true, version: '1.2.3', error: null })
     }), binaryPath);
     assert.equal(installs, 0);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('managed provider installation rejects release checksum mismatch and unofficial asset URLs', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-official-install-reject-'));
+  const binaryPath = path.join(root, 'provider', 'agy.exe');
+  const manifestUrl = 'https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/windows_amd64.json';
+  try {
+    await assert.rejects(() => installOfficialAntigravityCli({
+      platform: 'win32',
+      arch: 'x64',
+      binaryPath,
+      fetchImpl: async (url) => {
+        const body = String(url) === manifestUrl
+          ? Buffer.from(JSON.stringify({
+              version: '1.2.3',
+              url: 'https://storage.googleapis.com/antigravity-public/antigravity-cli/1.2.3/windows-x64/cli_windows_x64.exe',
+              sha512: '0'.repeat(128)
+            }))
+          : Buffer.from('tampered');
+        return { ok: true, status: 200, headers: { get: () => null }, async arrayBuffer() { return body; } };
+      }
+    }), /failed SHA-512 verification/);
+
+    await assert.rejects(() => installOfficialAntigravityCli({
+      platform: 'win32',
+      arch: 'x64',
+      binaryPath,
+      fetchImpl: async () => {
+        const body = Buffer.from(JSON.stringify({ version: '1.2.3', url: 'https://example.com/agy.exe', sha512: 'a'.repeat(128) }));
+        return { ok: true, status: 200, headers: { get: () => null }, async arrayBuffer() { return body; } };
+      }
+    }), /outside the official release bucket/);
+    await assert.rejects(() => fs.stat(binaryPath), /ENOENT/);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
@@ -141,7 +196,8 @@ test('an unhealthy default backend is replaced and revalidated automatically', a
         installs += 1;
         await fs.writeFile(binaryPath, 'repaired', 'utf8');
         return binaryPath;
-      }
+      },
+      provenanceImpl: async () => ({ status: 'verified' })
     });
     assert.equal(result, binaryPath);
     assert.equal(installs, 1);
@@ -166,7 +222,8 @@ test('provider update validates the new binary and rolls back on failure', async
         await fs.writeFile(target, 'new-provider', 'utf8');
         return target;
       },
-      probeImpl: async () => ({ ready: true, version: '9.9.9', error: null })
+      probeImpl: async () => ({ ready: true, version: '9.9.9', error: null }),
+      provenanceImpl: async () => ({ status: 'verified' })
     });
     assert.equal(updated.version, '9.9.9');
     assert.equal(await fs.readFile(binaryPath, 'utf8'), 'new-provider');
@@ -179,7 +236,8 @@ test('provider update validates the new binary and rolls back on failure', async
         await fs.writeFile(target, 'broken-provider', 'utf8');
         return target;
       },
-      probeImpl: async () => ({ ready: false, version: null, error: 'broken' })
+      probeImpl: async () => ({ ready: false, version: null, error: 'broken' }),
+      provenanceImpl: async () => ({ status: 'verified' })
     }), /not usable/);
     assert.equal(await fs.readFile(binaryPath, 'utf8'), 'new-provider');
   } finally {
@@ -193,6 +251,97 @@ test('provider update refuses to take ownership of an externally configured back
     env: { ANTIGRAVITY_CLI_BINARY: '/opt/agy' },
     binaryPath: '/opt/agy'
   }), /externally managed backend/);
+});
+
+test('external provider overrides are never installed or replaced by ensure', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-external-provider-'));
+  const binaryPath = path.join(root, 'missing-agy.exe');
+  let installs = 0;
+  try {
+    await assert.rejects(() => ensureOfficialAntigravityCli({
+      platform: 'win32',
+      env: { ANTIGRAVITY_CLI_BINARY: binaryPath },
+      binaryPath,
+      probeImpl: async () => ({ ready: false, version: null, error: 'missing' }),
+      installImpl: async () => { installs += 1; return binaryPath; }
+    }), /Configured Google Antigravity backend is not usable/);
+    assert.equal(installs, 0);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('managed provider provenance is checked before execution and tampering triggers repair', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-provider-provenance-'));
+  const binaryPath = path.join(root, 'agy.exe');
+  await fs.writeFile(binaryPath, 'tampered-provider', 'utf8');
+  const provenanceStates = ['changed', 'verified', 'verified'];
+  let provenanceChecks = 0;
+  let probes = 0;
+  let installs = 0;
+  try {
+    assert.equal(await ensureOfficialAntigravityCli({
+      platform: 'win32',
+      env: {},
+      binaryPath,
+      provenanceImpl: async () => ({ status: provenanceStates[provenanceChecks++] || 'verified' }),
+      probeImpl: async () => { probes += 1; return { ready: true, version: '2.0.0', error: null }; },
+      installImpl: async () => {
+        installs += 1;
+        await fs.writeFile(binaryPath, 'repaired-provider', 'utf8');
+        return binaryPath;
+      }
+    }), binaryPath);
+    assert.equal(installs, 1);
+    assert.equal(probes, 1, 'tampered provider must not be executed before replacement');
+    assert.equal(provenanceChecks, 3);
+    assert.equal(await fs.readFile(binaryPath, 'utf8'), 'repaired-provider');
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('managed provider trust is revalidated on every ensure call instead of cached by path', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-provider-no-cache-'));
+  const binaryPath = path.join(root, 'agy.exe');
+  await fs.writeFile(binaryPath, 'provider', 'utf8');
+  let provenanceChecks = 0;
+  let probes = 0;
+  try {
+    const options = {
+      platform: 'win32',
+      env: {},
+      binaryPath,
+      provenanceImpl: async () => { provenanceChecks += 1; return { status: 'verified' }; },
+      probeImpl: async () => { probes += 1; return { ready: true, version: '2.0.0', error: null }; },
+      installImpl: async () => { throw new Error('unexpected install'); }
+    };
+    await ensureOfficialAntigravityCli(options);
+    await ensureOfficialAntigravityCli(options);
+    assert.equal(provenanceChecks, 2);
+    assert.equal(probes, 2);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('automatic provider repair restores the previous binary when replacement fails', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-provider-repair-rollback-'));
+  const binaryPath = path.join(root, 'agy.exe');
+  await fs.writeFile(binaryPath, 'old-provider', 'utf8');
+  try {
+    await assert.rejects(() => ensureOfficialAntigravityCli({
+      platform: 'win32',
+      env: {},
+      binaryPath,
+      provenanceImpl: async () => ({ status: 'changed' }),
+      probeImpl: async () => { throw new Error('old provider must not be executed'); },
+      installImpl: async () => { throw new Error('download failed'); }
+    }), /download failed/);
+    assert.equal(await fs.readFile(binaryPath, 'utf8'), 'old-provider');
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
 });
 
 test('backend health probe validates the official binary version without exposing provider output', async () => {
@@ -224,11 +373,31 @@ test('Google runtime status reports backend readiness and account connectivity f
   try {
     const status = await googleRuntimeStatus({
       binaryPath,
+      provenanceImpl: async () => ({ status: 'verified' }),
       captureImpl: async (_binary, args) => args[0] === '--version'
         ? { code: 0, stdout: '1.2.3\n', stderr: '' }
         : { code: 0, stdout: 'gemini-3.8-flash-high\tGemini 3.8 Flash (High)\n', stderr: 'Fetching...' }
     });
     assert.deepEqual(status, { backend: 'ready', account: 'connected', version: '1.2.3' });
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Google runtime status refuses to execute a managed provider with changed provenance', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-runtime-provenance-'));
+  const binaryPath = path.join(root, 'agy.exe');
+  await fs.writeFile(binaryPath, 'tampered', 'utf8');
+  let captures = 0;
+  try {
+    const status = await googleRuntimeStatus({
+      env: {},
+      binaryPath,
+      provenanceImpl: async () => ({ status: 'changed', providerVersion: '1.2.3' }),
+      captureImpl: async () => { captures += 1; return { code: 0, stdout: '1.2.3', stderr: '' }; }
+    });
+    assert.deepEqual(status, { backend: 'broken', account: 'unknown', version: '1.2.3' });
+    assert.equal(captures, 0);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
@@ -241,6 +410,16 @@ gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)
 gemini-3.1-pro-low\tGemini 3.1 Pro (Low)
 claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)
 `), ['gemini-3.8-flash', 'gemini-3.1-pro', 'claude-sonnet-4-6']);
+});
+
+test('official Antigravity model parser ignores status and header text', () => {
+  assert.deepEqual(parseAntigravityModels(`
+Fetching models...
+Available models:
+gemini-3.8-flash-high\tGemini 3.8 Flash
+claude-sonnet-4-6\tClaude Sonnet
+done
+`), ['gemini-3.8-flash', 'claude-sonnet-4-6']);
 });
 
 test('official Antigravity model discovery hides provider progress and returns subscription models', async () => {
@@ -284,10 +463,24 @@ test('Antigravity request args preserve model, reasoning, permissions, attachmen
   assert.equal(args.filter((item) => item === '--add-dir').length, 1);
 });
 
-test('normal Google mode permits project tools inside the provider sandbox', () => {
-  const args = buildAntigravityArgs({ prompt: 'check the project', yes: false });
+test('normal Google mode defaults provider effort to high inside the sandbox', () => {
+  const args = buildAntigravityArgs({ prompt: 'check the project', model: 'gemini-3.8-flash', yes: false });
+  assert.deepEqual(args.slice(args.indexOf('--effort'), args.indexOf('--effort') + 2), ['--effort', 'high']);
   assert.ok(args.includes('--dangerously-skip-permissions'));
   assert.ok(args.includes('--sandbox'));
+});
+
+test('Antigravity stream transport keeps prompt content out of argv and defaults effort to high', () => {
+  const prompt = 'x'.repeat(100_000);
+  const args = buildAntigravityStreamArgs({ model: 'gemini-3.8-flash', yes: false });
+  const input = buildAntigravityStreamInput(prompt);
+  assert.deepEqual(args.slice(args.indexOf('--effort'), args.indexOf('--effort') + 2), ['--effort', 'high']);
+  assert.ok(args.includes('--print='));
+  assert.deepEqual(args.slice(args.indexOf('--input-format'), args.indexOf('--input-format') + 2), ['--input-format', 'stream-json']);
+  assert.deepEqual(args.slice(args.indexOf('--output-format'), args.indexOf('--output-format') + 2), ['--output-format', 'stream-json']);
+  assert.equal(args.some((arg) => arg.includes(prompt.slice(0, 1000))), false);
+  assert.ok(args.join(' ').length < 10_000);
+  assert.equal(JSON.parse(input.trim()).message.content, prompt);
 });
 
 test('Antigravity aliases resolve against models actually available to the subscription', async () => {
@@ -312,17 +505,30 @@ test('Antigravity JSON parser returns response and conversation ID', () => {
     parseAntigravityJson('{"conversation_id":"empty","status":"SUCCESS","response":""}'),
     { response: '', conversationId: 'empty' }
   );
+  assert.deepEqual(
+    parseAntigravityStreamJson('{"event":"init","conversation_id":"abc"}\n{"event":"result","result":{"conversation_id":"abc","status":"SUCCESS","response":"streamed\\n"}}\n'),
+    { response: 'streamed', conversationId: 'abc' }
+  );
 });
 
-test('high reasoning config covers Gemini 3 and Gemini 2.5 auto fallbacks', () => {
-  const config = buildReasoningDefaults('auto', 'high');
-  const overrides = config.modelConfigs.customOverrides;
-  const gemini3 = overrides.find((item) => item.match.model === 'gemini-3.1-pro-preview');
-  const gemini25 = overrides.find((item) => item.match.model === 'gemini-2.5-pro');
-
-  assert.equal(gemini3.modelConfig.generateContentConfig.thinkingConfig.thinkingLevel, 'HIGH');
-  assert.equal(gemini25.modelConfig.generateContentConfig.thinkingConfig.thinkingBudget, 8192);
-  assert.equal(config.ui.inlineThinkingMode, 'off');
+test('provider parse errors sanitize terminal controls and credential-like values', () => {
+  assert.throws(
+    () => parseAntigravityJson('\u001b[31mtoken=super-secret-value\u001b[0m'),
+    (error) => {
+      assert.match(error.message, /token=\[redacted\]/i);
+      assert.equal(error.message.includes('super-secret-value'), false);
+      assert.equal(error.message.includes('\u001b'), false);
+      return true;
+    }
+  );
+  assert.throws(
+    () => parseAntigravityJson(JSON.stringify({ status: 'ERROR', error: 'Bearer abcdefghijklmnop' })),
+    (error) => {
+      assert.match(error.message, /Bearer \[redacted\]/);
+      assert.equal(error.message.includes('abcdefghijklmnop'), false);
+      return true;
+    }
+  );
 });
 
 test('official login launches the Antigravity binary with no arguments in a hidden temporary PTY', async () => {
@@ -385,6 +591,34 @@ test('official login reports provider exit without exposing terminal escape sequ
   );
 });
 
+test('official login cancellation terminates the hidden PTY and rejects as AbortError', async () => {
+  const controller = new AbortController();
+  let killed = false;
+  const terminal = {
+    onData() {},
+    onExit() {},
+    kill() { killed = true; }
+  };
+
+  await assert.rejects(
+    () => runOfficialAntigravityLogin({
+      ensureImpl: async () => 'official-agy',
+      accountProbe: async () => false,
+      ptyLoader: async () => ({
+        spawn() {
+          controller.abort();
+          return terminal;
+        }
+      }),
+      pollMs: 1000,
+      timeoutMs: 60_000,
+      signal: controller.signal
+    }),
+    (error) => error?.name === 'AbortError' && error?.exitCode === 130
+  );
+  assert.equal(killed, true);
+});
+
 test('agy login delegates first-run authentication to official Antigravity and verifies it', async () => {
   const notices = [];
   let connected = false;
@@ -408,6 +642,30 @@ test('agy login delegates first-run authentication to official Antigravity and v
   assert.deepEqual(notices, ['Complete sign-in in your browser.']);
   assert.equal(loginCalls, 1);
   assert.equal(verifyCalls, 1);
+});
+
+test('Google login propagates one AbortSignal through probe, browser login, and verification', async () => {
+  const controller = new AbortController();
+  const seen = [];
+  let connected = false;
+
+  await loginWithGoogle({
+    signal: controller.signal,
+    officialProbe: async ({ signal }) => {
+      seen.push(['probe', signal]);
+      return connected;
+    },
+    officialLogin: async ({ signal }) => {
+      seen.push(['login', signal]);
+      connected = true;
+    },
+    officialVerify: async ({ signal }) => {
+      seen.push(['verify', signal]);
+    }
+  });
+
+  assert.deepEqual(seen.map(([name]) => name), ['probe', 'login', 'probe', 'verify']);
+  assert.equal(seen.every(([, signal]) => signal === controller.signal), true);
 });
 
 test('fresh subscription verification is headless, isolated, and checks the returned response', async () => {
@@ -507,17 +765,18 @@ test('Google model discovery falls back to the public catalog when official disc
 });
 
 test('Google model discovery prefers models exposed by the signed-in Antigravity subscription', async () => {
+  let publicCalls = 0;
   const models = await discoverGoogleModels({
     officialModelsLoader: async () => ['gemini-3.8-flash', 'gemini-3.1-pro', 'claude-sonnet-4-6'],
     platform: 'linux',
     curlLoader: null,
-    fetchImpl: async () => ({
-      ok: true,
-      status: 200,
-      async text() { return '<a>gemini-9-flash</a>'; }
-    })
+    fetchImpl: async () => {
+      publicCalls += 1;
+      throw new Error('public discovery should not run');
+    }
   });
   assert.deepEqual(models, ['gemini-3.8-flash', 'gemini-3.1-pro', 'claude-sonnet-4-6']);
+  assert.equal(publicCalls, 0);
 });
 
 test('GoogleAccountAgent executes through official Antigravity headless mode and resumes its conversation', async () => {
@@ -553,7 +812,9 @@ test('GoogleAccountAgent executes through official Antigravity headless mode and
   assert.deepEqual(calls[0].args.slice(calls[0].args.indexOf('--model'), calls[0].args.indexOf('--model') + 2), ['--model', 'gemini-3.8-flash']);
   assert.deepEqual(calls[0].args.slice(calls[0].args.indexOf('--effort'), calls[0].args.indexOf('--effort') + 2), ['--effort', 'high']);
   assert.ok(calls[0].args.includes('--dangerously-skip-permissions'));
-  const firstPrompt = calls[0].args[calls[0].args.indexOf('-p') + 1];
+  assert.equal(calls[0].args.includes('-p'), false);
+  assert.ok(calls[0].args.includes('--print='));
+  const firstPrompt = JSON.parse(calls[0].options.input.trim()).message.content;
   assert.match(firstPrompt, /Never use emojis/);
   assert.match(firstPrompt, /final section titled "Summary"/);
   assert.match(firstPrompt, /Summary section must be the last section/);
@@ -573,8 +834,8 @@ test('GoogleAccountAgent recovers an empty successful provider response and retu
     backend: {
       ensure: async () => 'official-agy',
       models: async () => ['gemini-3.8-flash'],
-      capture: async (_binary, args) => {
-        calls.push(args);
+      capture: async (_binary, args, options) => {
+        calls.push({ args, options });
         if (calls.length === 1) {
           return {
             code: 0,
@@ -594,10 +855,10 @@ test('GoogleAccountAgent recovers an empty successful provider response and retu
   assert.equal(await agent.prompt('check the project'), 'Project checked. No issues found.');
   assert.equal(calls.length, 2);
   assert.deepEqual(
-    calls[1].slice(calls[1].indexOf('--conversation'), calls[1].indexOf('--conversation') + 2),
+    calls[1].args.slice(calls[1].args.indexOf('--conversation'), calls[1].args.indexOf('--conversation') + 2),
     ['--conversation', 'conversation-empty']
   );
-  const recoveryPrompt = calls[1][calls[1].indexOf('-p') + 1];
+  const recoveryPrompt = JSON.parse(calls[1].options.input.trim()).message.content;
   assert.match(recoveryPrompt, /non-empty final user-facing response/);
   assert.match(recoveryPrompt, /Do not use emojis/);
   assert.match(recoveryPrompt, /Summary/);

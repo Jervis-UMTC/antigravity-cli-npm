@@ -3,25 +3,28 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { gunzipSync } from 'node:zlib';
 import { conversationAsText, conversationForModel } from './history.js';
-import { cancellationError, throwIfAborted } from './cancel.js';
+import { cancellationError, isCancellation, throwIfAborted } from './cancel.js';
+import { subprocessEnvironment } from './environment.js';
+import { processGroupOptions, terminateProcessTree } from './process.js';
 
 const MAX_CAPTURE_BYTES = 10 * 1024 * 1024;
-const REASONING_BUDGETS = { low: 1024, high: 8192 };
 const ANTIGRAVITY_LOGIN_TIMEOUT_MS = 5 * 60 * 1000;
 const ANTIGRAVITY_LOGIN_POLL_MS = 750;
 const MAX_LOGIN_CAPTURE_CHARS = 32_000;
 const PUBLIC_GEMINI_MODELS_URL = 'https://ai.google.dev/gemini-api/docs/models';
 const PUBLIC_MODEL_DISCOVERY_TIMEOUT_MS = 8 * 1000;
 const PUBLIC_MODEL_PAGE_MAX_BYTES = 2 * 1024 * 1024;
-const ANTIGRAVITY_INSTALL_URLS = {
-  win32: 'https://antigravity.google/cli/install.cmd',
-  default: 'https://antigravity.google/cli/install.sh'
-};
+const ANTIGRAVITY_RELEASE_BASE_URL = 'https://antigravity-cli-auto-updater-974169037036.us-central1.run.app';
+const ANTIGRAVITY_RELEASE_BUCKET_PREFIX = 'https://storage.googleapis.com/antigravity-public/antigravity-cli/';
+const MAX_PROVIDER_MANIFEST_BYTES = 64 * 1024;
+const MAX_PROVIDER_PACKAGE_BYTES = 256 * 1024 * 1024;
+const MAX_PROVIDER_UNPACKED_BYTES = 512 * 1024 * 1024;
+const MAX_PROVIDER_BINARY_BYTES = 256 * 1024 * 1024;
 const ANTIGRAVITY_PRINT_TIMEOUT = '10m';
 const PROVIDER_METADATA_VERSION = 1;
 let publicModelsPromise = null;
-const healthyBackendPaths = new Set();
 
 export function officialAntigravityBinaryPath({
   platform = process.platform,
@@ -29,7 +32,13 @@ export function officialAntigravityBinaryPath({
   home = os.homedir()
 } = {}) {
   const override = String(env.ANTIGRAVITY_CLI_BINARY || '').trim();
-  if (override) return path.resolve(override);
+  if (override) {
+    const pathApi = platform === 'win32' ? path.win32 : path.posix;
+    if (!pathApi.isAbsolute(override)) {
+      throw new Error('ANTIGRAVITY_CLI_BINARY must be an absolute path.');
+    }
+    return pathApi.normalize(override);
+  }
   if (platform === 'win32') {
     const localAppData = String(env.LOCALAPPDATA || '').trim() || path.join(home, 'AppData', 'Local');
     return path.join(localAppData, 'antigravity-cli-npm', 'provider', 'agy.exe');
@@ -47,10 +56,6 @@ async function fileExists(file) {
   } catch {
     return false;
   }
-}
-
-function sha256Text(value) {
-  return crypto.createHash('sha256').update(String(value), 'utf8').digest('hex');
 }
 
 async function sha256File(file) {
@@ -103,6 +108,8 @@ export async function providerProvenanceStatus({ binaryPath = officialAntigravit
     sourceUrl: metadata.sourceUrl,
     providerVersion: metadata.providerVersion || null,
     installerSha256: metadata.installerSha256 || null,
+    releaseUrl: metadata.releaseUrl || null,
+    releaseSha512: metadata.releaseSha512 || null,
     binarySha256,
     recordedBinarySha256: metadata.binarySha256,
     installedAt: metadata.installedAt || null,
@@ -110,7 +117,107 @@ export async function providerProvenanceStatus({ binaryPath = officialAntigravit
   };
 }
 
-async function captureExecutable(executable, args, { cwd = process.cwd(), env = process.env, signal, timeoutMs = null } = {}) {
+function providerReleasePlatform({ platform = process.platform, arch = process.arch, libc = null } = {}) {
+  const normalizedArch = arch === 'x64' ? 'amd64' : arch === 'arm64' ? 'arm64' : null;
+  if (!normalizedArch) throw new Error(`Google Antigravity does not support this CPU architecture: ${arch}`);
+  if (platform === 'win32') return `windows_${normalizedArch}`;
+  if (platform === 'darwin') return `darwin_${normalizedArch}`;
+  if (platform !== 'linux') throw new Error(`Google Antigravity does not support this operating system: ${platform}`);
+  let effectiveLibc = libc;
+  if (!effectiveLibc) {
+    try {
+      effectiveLibc = process.report?.getReport?.().header?.glibcVersionRuntime ? 'glibc' : 'musl';
+    } catch {
+      effectiveLibc = 'glibc';
+    }
+  }
+  return `linux_${normalizedArch}${effectiveLibc === 'musl' ? '_musl' : ''}`;
+}
+
+async function boundedResponseBytes(response, maxBytes, label, signal) {
+  const contentLength = Number(response.headers?.get?.('content-length') || 0);
+  if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+    throw new Error(`${label} is larger than the ${maxBytes} byte safety limit.`);
+  }
+  const chunks = [];
+  let total = 0;
+  if (response.body?.[Symbol.asyncIterator]) {
+    for await (const chunk of response.body) {
+      throwIfAborted(signal);
+      const buffer = Buffer.from(chunk);
+      total += buffer.length;
+      if (total > maxBytes) throw new Error(`${label} is larger than the ${maxBytes} byte safety limit.`);
+      chunks.push(buffer);
+    }
+    return Buffer.concat(chunks, total);
+  }
+  if (typeof response.arrayBuffer !== 'function') throw new Error(`${label} returned no readable body.`);
+  const buffer = Buffer.from(await response.arrayBuffer());
+  if (buffer.length > maxBytes) throw new Error(`${label} is larger than the ${maxBytes} byte safety limit.`);
+  return buffer;
+}
+
+function parseReleaseManifest(buffer, manifestUrl) {
+  let manifest;
+  try {
+    manifest = JSON.parse(buffer.toString('utf8'));
+  } catch (error) {
+    throw new Error('Google Antigravity release manifest is invalid JSON.', { cause: error });
+  }
+  const version = typeof manifest?.version === 'string' ? manifest.version.trim() : '';
+  const releaseUrl = typeof manifest?.url === 'string' ? manifest.url.trim() : '';
+  const sha512 = typeof manifest?.sha512 === 'string' ? manifest.sha512.trim().toLowerCase() : '';
+  if (!version || !releaseUrl || !/^[a-f0-9]{128}$/.test(sha512)) {
+    throw new Error('Google Antigravity release manifest is missing a valid version, URL, or SHA-512 digest.');
+  }
+  if (!releaseUrl.startsWith(ANTIGRAVITY_RELEASE_BUCKET_PREFIX)) {
+    throw new Error(`Google Antigravity release manifest points outside the official release bucket: ${releaseUrl}`);
+  }
+  return { version, releaseUrl, sha512, manifestUrl };
+}
+
+function tarText(buffer, offset, length) {
+  return buffer.subarray(offset, offset + length).toString('utf8').replace(/\0.*$/, '').trim();
+}
+
+function tarOctal(buffer, offset, length) {
+  const value = tarText(buffer, offset, length).replace(/^0+/, '') || '0';
+  if (!/^[0-7]+$/.test(value)) throw new Error('Google Antigravity release archive contains an invalid TAR size field.');
+  return Number.parseInt(value, 8);
+}
+
+function extractProviderBinaryFromTarGz(archive) {
+  let tar;
+  try {
+    tar = gunzipSync(archive, { maxOutputLength: MAX_PROVIDER_UNPACKED_BYTES });
+  } catch (error) {
+    throw new Error('Google Antigravity release archive could not be decompressed safely.', { cause: error });
+  }
+  let offset = 0;
+  let binary = null;
+  while (offset + 512 <= tar.length) {
+    const header = tar.subarray(offset, offset + 512);
+    if (header.every((byte) => byte === 0)) break;
+    const name = tarText(header, 0, 100);
+    const prefix = tarText(header, 345, 155);
+    const fullName = prefix ? `${prefix}/${name}` : name;
+    const size = tarOctal(header, 124, 12);
+    const type = header[156] === 0 ? '0' : String.fromCharCode(header[156]);
+    if (size > MAX_PROVIDER_BINARY_BYTES) throw new Error('Google Antigravity release archive contains an oversized entry.');
+    const dataStart = offset + 512;
+    const dataEnd = dataStart + size;
+    if (dataEnd > tar.length) throw new Error('Google Antigravity release archive is truncated.');
+    if (type === '0' && path.posix.basename(fullName) === 'antigravity') {
+      if (binary) throw new Error('Google Antigravity release archive contains multiple provider binaries.');
+      binary = Buffer.from(tar.subarray(dataStart, dataEnd));
+    }
+    offset = dataStart + Math.ceil(size / 512) * 512;
+  }
+  if (!binary?.length) throw new Error('Google Antigravity release archive does not contain the provider binary.');
+  return binary;
+}
+
+async function captureExecutable(executable, args, { cwd = process.cwd(), env = subprocessEnvironment(process.env), signal, timeoutMs = null, input = null } = {}) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       reject(cancellationError());
@@ -120,34 +227,42 @@ async function captureExecutable(executable, args, { cwd = process.cwd(), env = 
       cwd,
       env,
       windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe']
+      ...processGroupOptions(),
+      stdio: [input == null ? 'ignore' : 'pipe', 'pipe', 'pipe']
     });
-    let stdout = '';
-    let stderr = '';
+    const stdoutChunks = [];
+    const stderrChunks = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
     let exceeded = false;
     let aborted = false;
     let timedOut = false;
     const onAbort = () => {
       aborted = true;
-      child.kill();
+      terminateProcessTree(child);
     };
     signal?.addEventListener('abort', onAbort, { once: true });
     const timeout = timeoutMs ? setTimeout(() => {
       timedOut = true;
-      child.kill();
+      terminateProcessTree(child);
     }, timeoutMs) : null;
     timeout?.unref?.();
-    const append = (current, chunk) => {
-      const next = current + chunk.toString('utf8');
-      if (Buffer.byteLength(next, 'utf8') > MAX_CAPTURE_BYTES) {
+    const append = (chunks, currentBytes, chunk) => {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      if (currentBytes + buffer.length > MAX_CAPTURE_BYTES) {
         exceeded = true;
-        child.kill();
-        return current;
+        terminateProcessTree(child);
+        return currentBytes;
       }
-      return next;
+      chunks.push(buffer);
+      return currentBytes + buffer.length;
     };
-    child.stdout.on('data', (chunk) => { stdout = append(stdout, chunk); });
-    child.stderr.on('data', (chunk) => { stderr = append(stderr, chunk); });
+    child.stdout.on('data', (chunk) => { stdoutBytes = append(stdoutChunks, stdoutBytes, chunk); });
+    child.stderr.on('data', (chunk) => { stderrBytes = append(stderrChunks, stderrBytes, chunk); });
+    if (input != null && child.stdin) {
+      child.stdin.on('error', () => {});
+      child.stdin.end(String(input), 'utf8');
+    }
     child.on('error', reject);
     child.on('close', (code) => {
       if (timeout) clearTimeout(timeout);
@@ -155,36 +270,55 @@ async function captureExecutable(executable, args, { cwd = process.cwd(), env = 
       if (aborted || signal?.aborted) return reject(cancellationError());
       if (timedOut) return reject(new Error(`Provider command timed out after ${timeoutMs} ms.`));
       if (exceeded) return reject(new Error('Provider produced too much output.'));
-      resolve({ code, stdout, stderr });
+      resolve({
+        code,
+        stdout: Buffer.concat(stdoutChunks, stdoutBytes).toString('utf8'),
+        stderr: Buffer.concat(stderrChunks, stderrBytes).toString('utf8')
+      });
     });
   });
 }
 
 export async function installOfficialAntigravityCli({
   platform = process.platform,
+  arch = process.arch,
+  libc = null,
   binaryPath = officialAntigravityBinaryPath({ platform }),
   fetchImpl = globalThis.fetch,
-  captureImpl = captureExecutable
+  signal
 } = {}) {
+  throwIfAborted(signal);
   if (typeof fetchImpl !== 'function') throw new Error('Installing the Google Antigravity backend requires fetch support.');
-  const url = platform === 'win32' ? ANTIGRAVITY_INSTALL_URLS.win32 : ANTIGRAVITY_INSTALL_URLS.default;
-  const response = await fetchImpl(url);
-  if (!response.ok) throw new Error(`Google Antigravity installer returned HTTP ${response.status}.`);
-  const script = await response.text();
-  const extension = platform === 'win32' ? '.cmd' : '.sh';
-  const tempFile = path.join(os.tmpdir(), `agy-google-backend-${process.pid}-${crypto.randomUUID()}${extension}`);
+  const platformId = providerReleasePlatform({ platform, arch, libc });
+  const manifestUrl = `${ANTIGRAVITY_RELEASE_BASE_URL}/manifests/${platformId}.json`;
+  const manifestResponse = await fetchImpl(manifestUrl, { signal, redirect: 'error' });
+  throwIfAborted(signal);
+  if (!manifestResponse.ok) throw new Error(`Google Antigravity release manifest returned HTTP ${manifestResponse.status}.`);
+  const manifest = parseReleaseManifest(
+    await boundedResponseBytes(manifestResponse, MAX_PROVIDER_MANIFEST_BYTES, 'Google Antigravity release manifest', signal),
+    manifestUrl
+  );
+  const releaseResponse = await fetchImpl(manifest.releaseUrl, { signal, redirect: 'error' });
+  throwIfAborted(signal);
+  if (!releaseResponse.ok) throw new Error(`Google Antigravity release package returned HTTP ${releaseResponse.status}.`);
+  const releasePackage = await boundedResponseBytes(releaseResponse, MAX_PROVIDER_PACKAGE_BYTES, 'Google Antigravity release package', signal);
+  const actualSha512 = crypto.createHash('sha512').update(releasePackage).digest('hex');
+  if (actualSha512 !== manifest.sha512) {
+    throw new Error('Google Antigravity release package failed SHA-512 verification.');
+  }
+  const binary = platform === 'win32' ? releasePackage : extractProviderBinaryFromTarGz(releasePackage);
+  if (!binary.length || binary.length > MAX_PROVIDER_BINARY_BYTES) throw new Error('Google Antigravity provider binary has an invalid size.');
+
   const targetDirectory = path.dirname(binaryPath);
-  await fs.writeFile(tempFile, script, { encoding: 'utf8', mode: 0o700 });
+  const tempFile = path.join(targetDirectory, `.${path.basename(binaryPath)}.${process.pid}.${crypto.randomUUID()}.tmp`);
+  await fs.mkdir(targetDirectory, { recursive: true });
   try {
-    const executable = platform === 'win32' ? 'cmd.exe' : 'sh';
-    const args = platform === 'win32'
-      ? ['/d', '/c', tempFile, '--dir', targetDirectory, '--skip-path', '--skip-aliases']
-      : [tempFile, '--dir', targetDirectory, '--skip-path', '--skip-aliases'];
-    const result = await captureImpl(executable, args, { env: process.env, timeoutMs: 180_000 });
-    if (result.code !== 0) {
-      const detail = String(result.stderr || result.stdout || '').trim();
-      throw new Error(`Google Antigravity backend installation failed${detail ? `: ${detail}` : '.'}`);
-    }
+    throwIfAborted(signal);
+    await fs.writeFile(tempFile, binary, { mode: 0o700, flag: 'wx' });
+    try { await fs.chmod(tempFile, 0o700); } catch {}
+    throwIfAborted(signal);
+    await fs.rm(binaryPath, { force: true });
+    await fs.rename(tempFile, binaryPath);
   } finally {
     await fs.rm(tempFile, { force: true });
   }
@@ -192,10 +326,11 @@ export async function installOfficialAntigravityCli({
     throw new Error(`Google Antigravity backend was not installed at ${binaryPath}.`);
   }
   await writeProviderMetadata(binaryPath, {
-    sourceUrl: url,
-    installerSha256: sha256Text(script),
+    sourceUrl: manifest.manifestUrl,
+    releaseUrl: manifest.releaseUrl,
+    releaseSha512: manifest.sha512,
     binarySha256: await sha256File(binaryPath),
-    providerVersion: null,
+    providerVersion: manifest.version,
     installedAt: new Date().toISOString(),
     verifiedAt: null
   });
@@ -204,58 +339,32 @@ export async function installOfficialAntigravityCli({
 
 export async function probeOfficialAntigravityBinary({
   binaryPath = officialAntigravityBinaryPath(),
-  captureImpl = captureExecutable
+  captureImpl = captureExecutable,
+  signal
 } = {}) {
+  throwIfAborted(signal);
   if (!await fileExists(binaryPath)) return { ready: false, version: null, error: 'missing' };
   try {
-    const result = await captureImpl(binaryPath, ['--version'], { env: googleAccountEnv(process.env), timeoutMs: 10_000 });
+    const result = await captureImpl(binaryPath, ['--version'], { env: googleAccountEnv(process.env), timeoutMs: 10_000, signal });
     const version = String(result.stdout || result.stderr || '').trim().split(/\r?\n/)[0] || null;
     if (result.code !== 0 || !version) return { ready: false, version: null, error: 'unhealthy' };
     return { ready: true, version, error: null };
   } catch (error) {
+    if (isCancellation(error) || signal?.aborted) throw cancellationError();
     return { ready: false, version: null, error: error instanceof Error ? error.message : String(error) };
   }
 }
 
-export async function ensureOfficialAntigravityCli({
-  platform = process.platform,
-  binaryPath = officialAntigravityBinaryPath({ platform }),
-  installImpl = installOfficialAntigravityCli,
-  probeImpl = probeOfficialAntigravityBinary,
-  env = process.env
-} = {}) {
-  const useCache = installImpl === installOfficialAntigravityCli && probeImpl === probeOfficialAntigravityBinary;
-  if (useCache && healthyBackendPaths.has(binaryPath)) return binaryPath;
-
-  const existing = await probeImpl({ binaryPath });
-  if (existing.ready) {
-    if (useCache) healthyBackendPaths.add(binaryPath);
-    return binaryPath;
-  }
-
-  if (String(env.ANTIGRAVITY_CLI_BINARY || '').trim() && await fileExists(binaryPath)) {
-    throw new Error(`Configured Google Antigravity backend is not usable: ${binaryPath}`);
-  }
-  if (await fileExists(binaryPath)) await fs.rm(binaryPath, { force: true });
-  const installed = await installImpl({ platform, binaryPath });
-  const verified = await probeImpl({ binaryPath: installed });
-  if (!verified.ready) throw new Error(`Installed Google Antigravity backend is not usable: ${installed}`);
-  await finalizeProviderMetadata(installed, verified.version);
-  if (useCache) healthyBackendPaths.add(installed);
-  return installed;
-}
-
-export async function updateOfficialAntigravityCli({
-  platform = process.platform,
-  env = process.env,
-  binaryPath = officialAntigravityBinaryPath({ platform, env }),
-  installImpl = installOfficialAntigravityCli,
-  probeImpl = probeOfficialAntigravityBinary
-} = {}) {
-  if (String(env.ANTIGRAVITY_CLI_BINARY || '').trim()) {
-    throw new Error('Provider update is disabled when ANTIGRAVITY_CLI_BINARY points to an externally managed backend.');
-  }
-
+async function replaceManagedProvider({
+  platform,
+  binaryPath,
+  installImpl,
+  probeImpl,
+  provenanceImpl = providerProvenanceStatus,
+  action = 'Installed',
+  signal
+}) {
+  throwIfAborted(signal);
   const metadataPath = officialAntigravityMetadataPath({ binaryPath });
   const backupRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'antigyc-provider-backup-'));
   const backupBinary = path.join(backupRoot, path.basename(binaryPath));
@@ -265,20 +374,23 @@ export async function updateOfficialAntigravityCli({
   try {
     if (hadBinary) await fs.copyFile(binaryPath, backupBinary);
     if (hadMetadata) await fs.copyFile(metadataPath, backupMetadata);
-    healthyBackendPaths.delete(binaryPath);
     await fs.rm(binaryPath, { force: true });
     await fs.rm(metadataPath, { force: true });
 
-    const installed = await installImpl({ platform, binaryPath });
-    const verified = await probeImpl({ binaryPath: installed });
-    if (!verified.ready) throw new Error(`Updated Google Antigravity backend is not usable: ${installed}`);
+    const installed = await installImpl({ platform, binaryPath, signal });
+    throwIfAborted(signal);
+    const recorded = await provenanceImpl({ binaryPath: installed });
+    if (recorded.status !== 'verified') {
+      throw new Error(`${action} Google Antigravity backend provenance is not verified: ${recorded.status}.`);
+    }
+    const verified = await probeImpl({ binaryPath: installed, signal });
+    if (!verified.ready) throw new Error(`${action} Google Antigravity backend is not usable: ${installed}`);
     await finalizeProviderMetadata(installed, verified.version);
-    healthyBackendPaths.add(installed);
-    return {
-      binaryPath: installed,
-      version: verified.version,
-      provenance: await providerProvenanceStatus({ binaryPath: installed })
-    };
+    const provenance = await provenanceImpl({ binaryPath: installed });
+    if (provenance.status !== 'verified') {
+      throw new Error(`${action} Google Antigravity backend provenance changed during verification.`);
+    }
+    return { binaryPath: installed, version: verified.version, provenance };
   } catch (error) {
     await fs.mkdir(path.dirname(binaryPath), { recursive: true });
     await fs.rm(binaryPath, { force: true });
@@ -291,11 +403,72 @@ export async function updateOfficialAntigravityCli({
   }
 }
 
+export async function ensureOfficialAntigravityCli({
+  platform = process.platform,
+  env = process.env,
+  binaryPath = officialAntigravityBinaryPath({ platform, env }),
+  installImpl = installOfficialAntigravityCli,
+  probeImpl = probeOfficialAntigravityBinary,
+  provenanceImpl = providerProvenanceStatus,
+  signal
+} = {}) {
+  throwIfAborted(signal);
+  const override = String(env.ANTIGRAVITY_CLI_BINARY || '').trim();
+  if (override) {
+    const existing = await probeImpl({ binaryPath, signal });
+    if (!existing.ready) {
+      throw new Error(`Configured Google Antigravity backend is not usable: ${binaryPath}`);
+    }
+    return binaryPath;
+  }
+
+  if (await fileExists(binaryPath)) {
+    const provenance = await provenanceImpl({ binaryPath });
+    if (provenance.status === 'verified') {
+      const existing = await probeImpl({ binaryPath, signal });
+      if (existing.ready) return binaryPath;
+    }
+  }
+
+  const replacement = await replaceManagedProvider({
+    platform,
+    binaryPath,
+    installImpl,
+    probeImpl,
+    provenanceImpl,
+    action: 'Installed',
+    signal
+  });
+  return replacement.binaryPath;
+}
+
+export async function updateOfficialAntigravityCli({
+  platform = process.platform,
+  env = process.env,
+  binaryPath = officialAntigravityBinaryPath({ platform, env }),
+  installImpl = installOfficialAntigravityCli,
+  probeImpl = probeOfficialAntigravityBinary,
+  provenanceImpl = providerProvenanceStatus
+} = {}) {
+  if (String(env.ANTIGRAVITY_CLI_BINARY || '').trim()) {
+    throw new Error('Provider update is disabled when ANTIGRAVITY_CLI_BINARY points to an externally managed backend.');
+  }
+
+  return replaceManagedProvider({
+    platform,
+    binaryPath,
+    installImpl,
+    probeImpl,
+    provenanceImpl,
+    action: 'Updated'
+  });
+}
+
 export function parseAntigravityModels(text) {
   const models = [];
   for (const line of String(text || '').split(/\r?\n/)) {
     const slug = line.trim().split(/\s+/)[0];
-    if (!slug) continue;
+    if (!/^(?:gemini|claude|gpt|o\d|text-embedding)[a-z0-9]*(?:[.-][a-z0-9]+)+$/i.test(slug)) continue;
     const effortVariant = slug.match(/^(gemini-\d+(?:\.\d+)?-(?:flash(?:-lite)?|pro))-(?:low|medium|high)$/i);
     models.push((effortVariant?.[1] || slug).toLowerCase());
   }
@@ -309,7 +482,7 @@ export async function discoverOfficialAntigravityModels({
   const binary = await ensureImpl();
   const result = await captureImpl(binary, ['models'], { env: googleAccountEnv(process.env), timeoutMs: 30_000 });
   if (result.code !== 0) {
-    const detail = String(result.stderr || result.stdout || '').trim();
+    const detail = sanitizeProviderDetail(result.stderr || result.stdout);
     throw new Error(`Google Antigravity model discovery failed${detail ? `: ${detail}` : '.'}`);
   }
   const models = parseAntigravityModels(result.stdout);
@@ -352,6 +525,7 @@ function loadPublicModelPageWithCurl(url, {
       url
     ], {
       windowsHide: true,
+      ...processGroupOptions(platform),
       stdio: ['ignore', 'pipe', 'pipe']
     });
 
@@ -362,7 +536,7 @@ function loadPublicModelPageWithCurl(url, {
       const next = current + chunk.toString('utf8');
       if (Buffer.byteLength(next, 'utf8') > PUBLIC_MODEL_PAGE_MAX_BYTES) {
         exceeded = true;
-        child.kill();
+        terminateProcessTree(child, { platform });
         return current;
       }
       return next;
@@ -452,27 +626,28 @@ export async function discoverGoogleModels({
   platform = process.platform,
   officialModelsLoader = discoverOfficialAntigravityModels
 } = {}) {
-  const [officialResult, publicResult] = await Promise.allSettled([
-    officialModelsLoader(),
-    discoverPublicGoogleModels({
+  let officialError = null;
+  try {
+    const officialModels = uniqueModelIds(await officialModelsLoader());
+    if (officialModels.length) return officialModels;
+  } catch (error) {
+    officialError = error;
+  }
+
+  try {
+    const publicModels = uniqueModelIds(await discoverPublicGoogleModels({
       fetchImpl,
       curlLoader,
       url: publicModelsUrl,
       timeoutMs: publicTimeoutMs,
       platform
-    })
-  ]);
-
-  if (officialResult.status === 'fulfilled' && officialResult.value.length) {
-    return uniqueModelIds(officialResult.value);
+    }));
+    if (publicModels.length) return publicModels;
+  } catch (error) {
+    if (!officialError) throw error;
   }
 
-  const publicModels = publicResult.status === 'fulfilled' ? publicResult.value : [];
-  const models = uniqueModelIds(publicModels);
-  if (models.length) return models;
-
-  if (officialResult.status === 'rejected') throw officialResult.reason;
-  if (publicResult.status === 'rejected') throw publicResult.reason;
+  if (officialError) throw officialError;
   return [];
 }
 
@@ -493,8 +668,32 @@ function stripTerminalControl(value) {
     .trim();
 }
 
-function wait(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sanitizeProviderDetail(value, maxLength = 1500) {
+  return stripTerminalControl(value)
+    .replace(/\b(Bearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi, '$1[redacted]')
+    .replace(/\b((?:token|secret|password|passwd|api[_-]?key|private[_-]?key|access[_-]?key|credential|cookie)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1[redacted]')
+    .replace(/([a-z][a-z0-9+.-]*:\/\/[^:\s/@]+:)[^@\s/]+@/gi, '$1[redacted]@')
+    .slice(0, maxLength);
+}
+
+function wait(ms, signal) {
+  if (!signal) return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(cancellationError());
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', onAbort);
+      reject(cancellationError());
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 export async function runOfficialAntigravityLogin({
@@ -503,11 +702,14 @@ export async function runOfficialAntigravityLogin({
   ptyLoader = loadAntigravityPty,
   timeoutMs = ANTIGRAVITY_LOGIN_TIMEOUT_MS,
   pollMs = ANTIGRAVITY_LOGIN_POLL_MS,
-  env = process.env
+  env = process.env,
+  signal
 } = {}) {
-  if (await accountProbe({ ensureImpl })) return true;
+  throwIfAborted(signal);
+  if (await accountProbe({ ensureImpl, signal })) return true;
 
-  const binary = await ensureImpl();
+  const binary = await ensureImpl({ signal });
+  throwIfAborted(signal);
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-official-login-'));
   let terminal = null;
   let output = '';
@@ -539,14 +741,16 @@ export async function runOfficialAntigravityLogin({
 
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      if (await accountProbe({ ensureImpl: async () => binary })) return true;
+      throwIfAborted(signal);
+      if (await accountProbe({ ensureImpl: async () => binary, signal })) return true;
       if (exited) break;
-      await wait(pollMs);
+      await wait(pollMs, signal);
     }
 
-    if (await accountProbe({ ensureImpl: async () => binary })) return true;
+    throwIfAborted(signal);
+    if (await accountProbe({ ensureImpl: async () => binary, signal })) return true;
 
-    const detail = stripTerminalControl(output).slice(-1500);
+    const detail = sanitizeProviderDetail(output.slice(-3000));
     if (exited) {
       throw new Error(
         `Official Antigravity sign-in ended before authentication completed${exitCode === null ? '' : ` (exit ${exitCode})`}${detail ? `: ${detail}` : '.'}`
@@ -567,57 +771,8 @@ function normalizeReasoning(value) {
   return level;
 }
 
-function reasoningTargets(model) {
-  if (model === 'auto' || model === 'pro') {
-    return ['gemini-3.1-pro-preview', 'gemini-3-pro-preview', 'gemini-2.5-pro'];
-  }
-  if (model === 'flash') {
-    return ['gemini-3.5-flash', 'gemini-3-flash-preview', 'gemini-2.5-flash'];
-  }
-  if (model === 'flash-lite') {
-    return ['gemini-3.1-flash-lite', 'gemini-2.5-flash-lite'];
-  }
-  return [model];
-}
-
-export function buildReasoningDefaults(model, reasoning) {
-  const level = normalizeReasoning(reasoning);
-  if (level === 'auto') return null;
-
-  const customOverrides = reasoningTargets(model || 'auto').map((target) => {
-    const thinkingConfig = /^gemini-3(?:\.|-|$)/.test(target)
-      ? { thinkingLevel: level.toUpperCase() }
-      : { thinkingBudget: REASONING_BUDGETS[level] };
-
-    return {
-      match: { model: target },
-      modelConfig: {
-        generateContentConfig: { thinkingConfig }
-      }
-    };
-  });
-
-  return {
-    general: {
-      enableNotifications: false,
-      topicUpdateNarration: false
-    },
-    ui: {
-      dynamicWindowTitle: false,
-      hideBanner: true,
-      hideFooter: true,
-      inlineThinkingMode: 'off',
-      loadingPhrases: 'off',
-      showSpinner: false,
-      showStatusInTitle: false,
-      showUserIdentity: false
-    },
-    modelConfigs: { customOverrides }
-  };
-}
-
 export function googleAccountEnv(source = process.env, defaultsPath = null) {
-  const env = { ...source, NO_COLOR: '1' };
+  const env = { ...subprocessEnvironment(source), NO_COLOR: '1' };
 
   delete env.GEMINI_API_KEY;
   delete env.GOOGLE_API_KEY;
@@ -639,17 +794,35 @@ export function parseAntigravityJson(text) {
   try {
     body = JSON.parse(trimmed);
   } catch {
-    throw new Error(`Google Antigravity returned invalid JSON: ${trimmed.slice(0, 500)}`);
+    throw new Error(`Google Antigravity returned invalid JSON: ${sanitizeProviderDetail(trimmed, 500)}`);
   }
   if (body.status && body.status !== 'SUCCESS') {
-    throw new Error(body.error || `Google Antigravity request ended with status ${body.status}.`);
+    throw new Error(body.error ? sanitizeProviderDetail(typeof body.error === 'string' ? body.error : JSON.stringify(body.error)) : `Google Antigravity request ended with status ${body.status}.`);
   }
-  if (body.error) throw new Error(typeof body.error === 'string' ? body.error : JSON.stringify(body.error));
+  if (body.error) throw new Error(sanitizeProviderDetail(typeof body.error === 'string' ? body.error : JSON.stringify(body.error)));
   if (typeof body.response !== 'string') throw new Error('Google Antigravity response did not contain response text.');
   return {
     response: body.response.trim(),
     conversationId: typeof body.conversation_id === 'string' && body.conversation_id ? body.conversation_id : null
   };
+}
+
+export function parseAntigravityStreamJson(text) {
+  const lines = String(text || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (lines.length === 0) throw new Error('Google Antigravity returned no output.');
+  let result = null;
+  for (const line of lines) {
+    let event;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      throw new Error(`Google Antigravity returned invalid stream JSON: ${sanitizeProviderDetail(line, 500)}`);
+    }
+    if (event?.event === 'result' && event.result && typeof event.result === 'object') result = event.result;
+    else if (typeof event?.status === 'string' && typeof event?.response === 'string') result = event;
+  }
+  if (!result) throw new Error('Google Antigravity stream ended without a result event.');
+  return parseAntigravityJson(JSON.stringify(result));
 }
 
 export async function resolveAntigravityModel(model, {
@@ -672,20 +845,13 @@ export async function resolveAntigravityModel(model, {
   return resolved;
 }
 
-export function buildAntigravityArgs({
-  prompt,
+function appendAntigravityExecutionArgs(args, {
   model = null,
-  reasoning = 'auto',
+  reasoning = 'high',
   yes = false,
   attachments = [],
   conversationId = null
 }) {
-  const args = [
-    '-p', prompt,
-    '--output-format', 'json',
-    '--disable-slash-commands',
-    '--print-timeout', ANTIGRAVITY_PRINT_TIMEOUT
-  ];
   if (model) args.push('--model', model);
   if (reasoning !== 'auto') args.push('--effort', normalizeReasoning(reasoning));
   // Print mode cannot surface the provider's interactive permission UI. The
@@ -700,24 +866,65 @@ export function buildAntigravityArgs({
   return args;
 }
 
+export function buildAntigravityArgs({
+  prompt,
+  model = null,
+  reasoning = 'high',
+  yes = false,
+  attachments = [],
+  conversationId = null
+}) {
+  return appendAntigravityExecutionArgs([
+    '-p', prompt,
+    '--output-format', 'json',
+    '--disable-slash-commands',
+    '--print-timeout', ANTIGRAVITY_PRINT_TIMEOUT
+  ], { model, reasoning, yes, attachments, conversationId });
+}
+
+export function buildAntigravityStreamArgs({
+  model = null,
+  reasoning = 'high',
+  yes = false,
+  attachments = [],
+  conversationId = null
+} = {}) {
+  return appendAntigravityExecutionArgs([
+    '--print=',
+    '--input-format', 'stream-json',
+    '--output-format', 'stream-json',
+    '--disable-slash-commands',
+    '--print-timeout', ANTIGRAVITY_PRINT_TIMEOUT
+  ], { model, reasoning, yes, attachments, conversationId });
+}
+
+export function buildAntigravityStreamInput(prompt) {
+  return `${JSON.stringify({ event: 'user', message: { content: String(prompt || '') } })}\n`;
+}
+
 async function probeOfficialAntigravityAccount({
   ensureImpl = ensureOfficialAntigravityCli,
-  captureImpl = captureExecutable
+  captureImpl = captureExecutable,
+  signal
 } = {}) {
   try {
-    const binary = await ensureImpl();
-    const result = await captureImpl(binary, ['models'], { env: googleAccountEnv(process.env), timeoutMs: 15_000 });
+    throwIfAborted(signal);
+    const binary = await ensureImpl({ signal });
+    const result = await captureImpl(binary, ['models'], { env: googleAccountEnv(process.env), timeoutMs: 15_000, signal });
     return result.code === 0 && parseAntigravityModels(result.stdout).length > 0;
-  } catch {
+  } catch (error) {
+    if (isCancellation(error) || signal?.aborted) throw cancellationError();
     return false;
   }
 }
 
 export async function verifyOfficialAntigravitySubscription({
   ensureImpl = ensureOfficialAntigravityCli,
-  captureImpl = captureExecutable
+  captureImpl = captureExecutable,
+  signal
 } = {}) {
-  const binary = await ensureImpl();
+  throwIfAborted(signal);
+  const binary = await ensureImpl({ signal });
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-login-check-'));
   try {
     const result = await captureImpl(binary, [
@@ -725,9 +932,9 @@ export async function verifyOfficialAntigravitySubscription({
       '--output-format', 'json',
       '--disable-slash-commands',
       '--print-timeout', '1m'
-    ], { cwd, env: googleAccountEnv(process.env), timeoutMs: 75_000 });
+    ], { cwd, env: googleAccountEnv(process.env), timeoutMs: 75_000, signal });
     if (result.code !== 0) {
-      const detail = String(result.stderr || result.stdout || '').trim();
+      const detail = sanitizeProviderDetail(result.stderr || result.stdout);
       throw new Error(`Google subscription verification failed${detail ? `: ${detail}` : '.'}`);
     }
     const parsed = parseAntigravityJson(result.stdout);
@@ -741,13 +948,27 @@ export async function verifyOfficialAntigravitySubscription({
 }
 
 export async function googleRuntimeStatus({
-  binaryPath = officialAntigravityBinaryPath(),
-  captureImpl = captureExecutable
+  env = process.env,
+  binaryPath = officialAntigravityBinaryPath({ env }),
+  captureImpl = captureExecutable,
+  provenanceImpl = providerProvenanceStatus
 } = {}) {
+  const override = String(env.ANTIGRAVITY_CLI_BINARY || '').trim();
+  if (!override) {
+    const provenance = await provenanceImpl({ binaryPath });
+    if (provenance.status !== 'verified') {
+      return {
+        backend: provenance.status === 'missing' ? 'missing' : 'broken',
+        account: 'unknown',
+        version: provenance.providerVersion || null
+      };
+    }
+  }
+
   const backend = await probeOfficialAntigravityBinary({ binaryPath, captureImpl });
   if (!backend.ready) return { backend: backend.error === 'missing' ? 'missing' : 'broken', account: 'unknown', version: null };
   try {
-    const result = await captureImpl(binaryPath, ['models'], { env: googleAccountEnv(process.env), timeoutMs: 15_000 });
+    const result = await captureImpl(binaryPath, ['models'], { env: googleAccountEnv(env), timeoutMs: 15_000 });
     const connected = result.code === 0 && parseAntigravityModels(result.stdout).length > 0;
     return { backend: 'ready', account: connected ? 'connected' : 'login-required', version: backend.version };
   } catch {
@@ -759,18 +980,21 @@ export async function loginWithGoogle({
   notify = () => {},
   officialProbe = probeOfficialAntigravityAccount,
   officialLogin = runOfficialAntigravityLogin,
-  officialVerify = verifyOfficialAntigravitySubscription
+  officialVerify = verifyOfficialAntigravitySubscription,
+  signal
 } = {}) {
-  if (await officialProbe()) return;
+  throwIfAborted(signal);
+  if (await officialProbe({ signal })) return;
 
   notify('Complete sign-in in your browser.');
-  await officialLogin({ accountProbe: officialProbe });
+  await officialLogin({ accountProbe: officialProbe, signal });
 
-  if (!await officialProbe()) {
+  throwIfAborted(signal);
+  if (!await officialProbe({ signal })) {
     throw new Error('Official Antigravity sign-in completed without creating a usable subscription session.');
   }
 
-  await officialVerify();
+  await officialVerify({ signal });
 }
 
 export class GoogleAccountAgent {
@@ -778,7 +1002,7 @@ export class GoogleAccountAgent {
     workspace,
     displayWorkspace,
     model = 'auto',
-    reasoning = 'auto',
+    reasoning = 'high',
     yes = false,
     history = [],
     backend = {},
@@ -829,8 +1053,7 @@ export class GoogleAccountAgent {
       ? `\n\nAttachments for this request:\n${attachments.map((attachment) => `- ${attachment.name}: ${attachment.stagedPath}`).join('\n')}\nRead every listed attachment with the read_file tool before answering. Images and PDFs are multimodal inputs. Do not copy attachment files into the project.`
       : '';
     const hiddenInstruction = `Shell response rules: Never use emojis in any user-facing response. Keep terminal output plain text and professional. Every final user-facing response must end with a final section titled "Summary"; that Summary section must be the last section and briefly state the result and validation performed.\n\nOperate autonomously on this staged copy as the project at ${this.displayWorkspace}. Do not mention staging paths, conversation storage, or internal tool activity. For broad tasks, map the repository before editing. Continue through inspection, implementation, testing, and debugging until the user's coding request is actually complete. Do not stop at the first failed check: diagnose evidence-backed failures, fix them when they are in scope, and rerun the relevant validation. After modifications, inspect the resulting changes and run appropriate tests/build/lint/type checks when available before finalizing. Never claim validation passed unless it was actually run. Always return a non-empty concise final user-facing response, including for inspection-only requests or when no files change.${previousConversation}${attachmentInstruction}\n\nUser request:\n${text}`;
-    const args = buildAntigravityArgs({
-      prompt: hiddenInstruction,
+    const args = buildAntigravityStreamArgs({
       model: effectiveModel,
       reasoning: this.reasoning,
       yes: this.yes,
@@ -842,16 +1065,18 @@ export class GoogleAccountAgent {
     const result = await this.captureBackend(binary, args, {
       cwd: this.workspace,
       env: googleAccountEnv(process.env),
-      signal
+      signal,
+      input: buildAntigravityStreamInput(hiddenInstruction)
     });
 
     if (result.code !== 0) {
       let structuredError = '';
       try {
-        const body = JSON.parse(String(result.stdout || '').trim());
-        structuredError = typeof body.error === 'string' ? body.error : '';
+        const resultEvent = String(result.stdout || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+          .map((line) => JSON.parse(line)).findLast?.((event) => event?.event === 'result');
+        structuredError = typeof resultEvent?.result?.error === 'string' ? resultEvent.result.error : '';
       } catch {}
-      const detail = (structuredError || result.stderr || result.stdout || '').trim();
+      const detail = sanitizeProviderDetail(structuredError || result.stderr || result.stdout);
       if (/auth(?:entication)? required|not authenticated|sign.?in|log.?in|credential/i.test(detail)) {
         const error = new Error('Google subscription session became unavailable. Retry the request; official Antigravity sign-in will reopen automatically if needed.');
         error.code = 'GOOGLE_AUTH_REQUIRED';
@@ -860,11 +1085,11 @@ export class GoogleAccountAgent {
       throw new Error(`Google subscription request failed${detail ? `: ${detail}` : '.'}`);
     }
 
-    let parsed = parseAntigravityJson(result.stdout);
+    let parsed = parseAntigravityStreamJson(result.stdout);
     this.conversationId = parsed.conversationId || this.conversationId;
     if (!parsed.response && this.conversationId) {
-      const recoveryArgs = buildAntigravityArgs({
-        prompt: 'Return the concise non-empty final user-facing response for the immediately previous request. Do not make additional project changes. Do not use emojis. End the response with a final section titled "Summary" and make that the last section.',
+      const recoveryPrompt = 'Return the concise non-empty final user-facing response for the immediately previous request. Do not make additional project changes. Do not use emojis. End the response with a final section titled "Summary" and make that the last section.';
+      const recoveryArgs = buildAntigravityStreamArgs({
         model: effectiveModel,
         reasoning: this.reasoning,
         yes: false,
@@ -873,13 +1098,14 @@ export class GoogleAccountAgent {
       const recovery = await this.captureBackend(binary, recoveryArgs, {
         cwd: this.workspace,
         env: googleAccountEnv(process.env),
-        signal
+        signal,
+        input: buildAntigravityStreamInput(recoveryPrompt)
       });
       if (recovery.code !== 0) {
-        const detail = String(recovery.stderr || recovery.stdout || '').trim();
+        const detail = sanitizeProviderDetail(recovery.stderr || recovery.stdout);
         throw new Error(`Google Antigravity returned an empty final response and response recovery failed${detail ? `: ${detail}` : '.'}`);
       }
-      parsed = parseAntigravityJson(recovery.stdout);
+      parsed = parseAntigravityStreamJson(recovery.stdout);
       this.conversationId = parsed.conversationId || this.conversationId;
     }
     if (!parsed.response) {

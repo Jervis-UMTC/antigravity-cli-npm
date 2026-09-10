@@ -9,6 +9,7 @@ test('doctor prints plain actionable health lines without UI chrome', async () =
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'antigyc-doctor-workspace-'));
   const home = await fs.mkdtemp(path.join(os.tmpdir(), 'antigyc-doctor-home-'));
   try {
+    const fetched = [];
     const execImpl = async (executable) => {
       if (executable === 'where.exe') return { stdout: 'C:\\npm\\antigyc.cmd\r\n', stderr: '' };
       if (executable === 'cmd.exe') return { stdout: '11.6.1\r\n', stderr: '' };
@@ -22,7 +23,8 @@ test('doctor prints plain actionable health lines without UI chrome', async () =
       platform: 'win32',
       nodeVersion: '20.19.0',
       execImpl,
-      fetchImpl: async () => ({ status: 200 }),
+      fetchImpl: async (url) => { fetched.push(String(url)); return { status: 200 }; },
+      sandboxLoader: async () => ({ ready: true, errors: [], warnings: [] }),
       runtimeLoader: async () => ({ backend: 'ready', account: 'connected', version: '1.2.3' }),
       provenanceLoader: async () => ({ status: 'verified', sourceUrl: 'https://antigravity.google/cli/install.cmd' })
     });
@@ -33,7 +35,15 @@ test('doctor prints plain actionable health lines without UI chrome', async () =
     assert.match(text, /provider=ok state=ready version=1\.2\.3/);
     assert.match(text, /google-account=ok state=connected/);
     assert.match(text, /provider-provenance=ok state=verified/);
-    assert.match(text, /network=ok npm-registry=reachable/);
+    assert.match(text, /command-sandbox=ok ready/);
+    assert.match(text, /network-npm=ok reachable/);
+    assert.match(text, /network-provider=ok reachable/);
+    assert.match(text, /network-models=ok reachable/);
+    assert.deepEqual(fetched, [
+      'https://registry.npmjs.org/antigyc',
+      'https://antigravity-cli-auto-updater-974169037036.us-central1.run.app',
+      'https://ai.google.dev/gemini-api/docs/models'
+    ]);
     assert.doesNotMatch(text, /[╭╮╰╯│─]/);
   } finally {
     await fs.rm(workspace, { recursive: true, force: true });
@@ -55,12 +65,15 @@ test('doctor returns a failing status for an unsupported Node runtime', async ()
       execImpl: async (executable) => executable === 'npm'
         ? { stdout: '10.0.0\n', stderr: '' }
         : { stdout: '/usr/bin/antigyc\n', stderr: '' },
-      fetchImpl: async () => ({ status: 503 }),
+      fetchImpl: async () => { throw new Error('offline'); },
+      sandboxLoader: async () => ({ ready: false, errors: ['missing runtime dependency'], warnings: [] }),
       runtimeLoader: async () => ({ backend: 'missing', account: 'unknown', version: null }),
       provenanceLoader: async () => ({ status: 'missing' })
     });
     assert.equal(report.ok, false);
     assert.match(renderDoctor(report), /node=fail version=18\.20\.0/);
+    assert.match(renderDoctor(report), /network-provider=warn unreachable/);
+    assert.match(renderDoctor(report), /command-sandbox=warn not-ready missing runtime dependency/);
   } finally {
     await fs.rm(workspace, { recursive: true, force: true });
     await fs.rm(home, { recursive: true, force: true });

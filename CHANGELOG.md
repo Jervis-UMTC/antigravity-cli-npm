@@ -2,6 +2,14 @@
 
 All notable changes to the `antigyc` npm package are documented here.
 
+## 0.1.2 - 2026-09-10
+
+### Changed
+
+- Added the initial live agent event-streaming workflow that was present in the published `0.1.2` package.
+- Expanded the beginner-oriented README and quick-start guidance.
+- Bumped package, lockfile, and release-readiness metadata from `0.1.1` to `0.1.2`.
+
 ## 0.1.1 - 2026-09-09
 
 ### Changed

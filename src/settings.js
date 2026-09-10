@@ -6,6 +6,7 @@ import path from 'node:path';
 const VALID_REASONING = new Set(['auto', 'low', 'high']);
 const VALID_AUTH = new Set(['auto', 'google', 'api-key']);
 const VALID_APPROVAL = new Set(['ask', 'yes']);
+const SETTINGS_VERSION = 1;
 
 function rootDirectory({ baseDir, env = process.env, home = os.homedir() } = {}) {
   return path.resolve(baseDir || env.ANTIGRAVITY_HOME || path.join(home, '.antigravity-cli'));
@@ -44,10 +45,14 @@ export async function createSettingsStore(options = {}) {
 
   async function load() {
     try {
-      return normalizeSettings(JSON.parse(await fs.readFile(file, 'utf8')));
+      const parsed = JSON.parse(await fs.readFile(file, 'utf8'));
+      if (parsed?.version !== undefined && parsed.version !== SETTINGS_VERSION) {
+        throw new Error(`Unsupported settings file version ${String(parsed.version)}: ${file}`);
+      }
+      return normalizeSettings(parsed);
     } catch (error) {
       if (error?.code === 'ENOENT') return {};
-      if (error instanceof SyntaxError) throw new Error(`Settings file is invalid: ${file}`);
+      if (error instanceof SyntaxError) throw new Error(`Settings file is invalid: ${file}`, { cause: error });
       throw error;
     }
   }
@@ -58,7 +63,7 @@ export async function createSettingsStore(options = {}) {
       await fs.rm(file, { force: true });
       return normalized;
     }
-    await writeJsonAtomic(file, { version: 1, ...normalized });
+    await writeJsonAtomic(file, { version: SETTINGS_VERSION, ...normalized });
     return normalized;
   }
 
@@ -82,8 +87,8 @@ export function mergeRuntimePreferences(parsed, stored = {}, env = process.env) 
 
   options.auth = options.auth || envAuth || stored.auth || 'google';
   options.model = options.model || envModel || stored.model || 'gemini-3.8-flash';
-  options.reasoning = options.reasoning || envReasoning || stored.reasoning || 'auto';
-  if (options.turbo === null || options.turbo === undefined) options.turbo = stored.turbo !== false;
+  options.reasoning = options.reasoning || envReasoning || stored.reasoning || 'high';
+  if (options.turbo === null || options.turbo === undefined) options.turbo = stored.turbo === true;
   if (options.yes === null || options.yes === undefined) options.yes = options.turbo || stored.approval === 'yes';
   if (options.turbo) options.yes = true;
   return options;

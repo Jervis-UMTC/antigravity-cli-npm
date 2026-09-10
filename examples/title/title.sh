@@ -1,15 +1,14 @@
 #!/bin/bash
 set -euo pipefail
 
+# Provider CLI reference only. This is not antigyc runtime UI; see ../README.md.
+
 # Read JSON payload from stdin
 DATA=$(cat)
 
-# Extract fields using jq
-eval $(echo "$DATA" | jq -r '
-  "STATE=\"\(.agent_state // "idle")\"
-   CWD=\"\(.workspace.current_dir // "")\"
-  "
-' 2>/dev/null || echo 'STATE="idle" CWD=""')
+# Extract fields as data, never as shell source.
+STATE=$(printf '%s' "$DATA" | jq -r '.agent_state // "idle"' 2>/dev/null || printf '%s\n' 'idle')
+CWD=$(printf '%s' "$DATA" | jq -r '.workspace.current_dir // ""' 2>/dev/null || printf '%s\n' '')
 
 # Try to extract CitC workspace name from CWD
 if [ -n "$CWD" ]; then

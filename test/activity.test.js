@@ -48,16 +48,17 @@ test('activity indicator stays quiet until its delay then shows elapsed working 
     ...scheduler
   });
 
+  activity.setPhase('Preparing');
   assert.deepEqual(stream.writes, []);
   scheduler.timeouts[0].callback();
-  assert.equal(stream.writes.at(-1), '\rWorking... 0s');
+  assert.equal(stream.writes.at(-1), '\rPreparing... 0s');
 
   currentTime = 2_750;
   scheduler.intervals[0].callback();
-  assert.equal(stream.writes.at(-1), '\rWorking... 1s');
+  assert.equal(stream.writes.at(-1), '\rPreparing... 1s');
 
   activity.stop();
-  assert.equal(stream.writes.at(-1), `\r${' '.repeat('Working... 1s'.length)}\r`);
+  assert.equal(stream.writes.at(-1), `\r${' '.repeat('Preparing... 1s'.length)}\r`);
 });
 
 test('activity indicator pauses cleanly for interactive approval and resumes afterward', () => {

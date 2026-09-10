@@ -197,6 +197,103 @@ test('resume refuses to publish when the real project changed after interruption
   }
 });
 
+test('resume rejects a tampered baseline manifest with traversal paths', async () => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-stage-resume-tamper-'));
+  const first = await createStagingWorkspace(workspace);
+  let resumed = null;
+  try {
+    await fs.writeFile(path.join(workspace, 'app.txt'), 'before\n', 'utf8');
+    await first.begin();
+    const container = first.container;
+    await first.close({ preserve: true });
+    await fs.writeFile(
+      path.join(container, 'baseline.json'),
+      `${JSON.stringify([['../outside.txt', 'dir']])}\n`,
+      'utf8'
+    );
+
+    resumed = await createStagingWorkspace(workspace, { container });
+    await assert.rejects(() => resumed.resume(), /baseline is invalid/);
+  } finally {
+    await resumed?.close().catch(() => {});
+    await fs.rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test('resume rejects duplicate baseline manifest paths', async () => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-stage-resume-duplicate-'));
+  await fs.writeFile(path.join(workspace, 'app.txt'), 'before\n', 'utf8');
+  const first = await createStagingWorkspace(workspace);
+  let resumed = null;
+  try {
+    await first.begin();
+    const container = first.container;
+    const baselinePath = path.join(container, 'baseline.json');
+    const baseline = JSON.parse(await fs.readFile(baselinePath, 'utf8'));
+    baseline.push(baseline[0]);
+    await first.close({ preserve: true });
+    await fs.writeFile(baselinePath, `${JSON.stringify(baseline)}\n`, 'utf8');
+
+    resumed = await createStagingWorkspace(workspace, { container });
+    await assert.rejects(() => resumed.resume(), /duplicate paths/);
+  } finally {
+    await resumed?.close().catch(() => {});
+    await fs.rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test('resume refuses a staging container that is a symlink or junction', async (t) => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-stage-resume-link-workspace-'));
+  const target = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-stage-resume-link-target-'));
+  const link = path.join(os.tmpdir(), `agyc-stage-link-${process.pid}-${Date.now()}`);
+  try {
+    try {
+      await fs.symlink(target, link, process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (error) {
+      if (error?.code === 'EPERM' || error?.code === 'EACCES') {
+        t.skip('symlink/junction creation is not permitted on this host');
+        return;
+      }
+      throw error;
+    }
+    await assert.rejects(
+      () => createStagingWorkspace(workspace, { container: link }),
+      /invalid staging location/
+    );
+  } finally {
+    await fs.rm(link, { recursive: true, force: true }).catch(() => {});
+    await fs.rm(target, { recursive: true, force: true });
+    await fs.rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test('commit revalidates immediately before publication and preserves a racing external edit', async () => {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-stage-race-'));
+  const file = path.join(workspace, 'app.txt');
+  await fs.writeFile(file, 'before\n', 'utf8');
+  let raced = false;
+  const staging = await createStagingWorkspace(workspace, {
+    hooks: {
+      async beforeApply(relative) {
+        if (!raced && relative === 'app.txt') {
+          raced = true;
+          await fs.writeFile(file, 'external\n', 'utf8');
+        }
+      }
+    }
+  });
+
+  try {
+    await staging.begin();
+    await fs.writeFile(path.join(staging.workspace, 'app.txt'), 'staged\n', 'utf8');
+    await assert.rejects(() => staging.commit(), /changed outside this session/);
+    assert.equal(await fs.readFile(file, 'utf8'), 'external\n');
+  } finally {
+    await staging.close();
+    await fs.rm(workspace, { recursive: true, force: true });
+  }
+});
+
 test('cancellation before publication leaves the real project unchanged', async () => {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-stage-cancel-'));
   await fs.writeFile(path.join(workspace, 'app.txt'), 'before\n', 'utf8');

@@ -1,12 +1,21 @@
 import fs from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
 import path from 'node:path';
-import { exec as execCallback, execFile as execFileCallback } from 'node:child_process';
+import { createInterface } from 'node:readline';
+import { exec as execCallback } from 'node:child_process';
 import { promisify } from 'node:util';
 import { isCancellation, throwIfAborted } from './cancel.js';
+import { createCommandSandbox } from './command-sandbox.js';
+import { subprocessEnvironment } from './environment.js';
 
 const exec = promisify(execCallback);
-const execFile = promisify(execFileCallback);
 const DEFAULT_IGNORES = new Set(['.git', 'node_modules', 'dist', 'build', '.next', 'coverage', '.cache']);
+const SENSITIVE_DIRECTORIES = new Set(['.ssh', '.aws', '.gnupg']);
+const SENSITIVE_FILES = new Set([
+  '.env', '.envrc', '.npmrc', '.pypirc', '.netrc', '.git-credentials',
+  'credentials.json', 'service-account.json', 'id_rsa', 'id_ed25519'
+]);
+const SAFE_ENV_TEMPLATES = new Set(['.env.example', '.env.sample', '.env.template']);
 const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_FILE_OUTPUT = 120_000;
 const MAX_COMMAND_OUTPUT = 80_000;
@@ -16,8 +25,48 @@ function clip(text, max = MAX_COMMAND_OUTPUT, suffix = null) {
   return `${text.slice(0, max)}\n${suffix || `...[truncated ${text.length - max} chars]`}`;
 }
 
+async function readLineRange(file, startLine, endLine) {
+  const input = createReadStream(file, { encoding: 'utf8' });
+  const lines = createInterface({ input, crlfDelay: Infinity });
+  const output = [];
+  let number = 0;
+  let chars = 0;
+  let truncated = false;
+  try {
+    for await (const line of lines) {
+      number += 1;
+      if (number < startLine) continue;
+      if (number > endLine) break;
+      const rendered = `${number}: ${line}`;
+      if (chars + rendered.length + 1 > MAX_FILE_OUTPUT) {
+        const remaining = Math.max(0, MAX_FILE_OUTPUT - chars);
+        if (remaining) output.push(rendered.slice(0, remaining));
+        truncated = true;
+        break;
+      }
+      output.push(rendered);
+      chars += rendered.length + 1;
+    }
+  } finally {
+    lines.close();
+    input.destroy();
+  }
+  const text = output.join('\n');
+  return truncated ? `${text}\n...[file read truncated; request a narrower line range]` : text;
+}
+
 function inside(root, candidate) {
   return candidate === root || candidate.startsWith(`${root}${path.sep}`);
+}
+
+function isSensitiveProjectPath(relative) {
+  const normalized = String(relative || '').replace(/\\/g, '/').toLowerCase();
+  const parts = normalized.split('/').filter(Boolean);
+  if (parts.some((part) => SENSITIVE_DIRECTORIES.has(part))) return true;
+  const base = parts.at(-1) || '';
+  if (SAFE_ENV_TEMPLATES.has(base)) return false;
+  if (SENSITIVE_FILES.has(base) || base.startsWith('.env.')) return true;
+  return /\.(?:pem|key|p12|pfx|jks|keystore)$/i.test(base);
 }
 
 async function nearestExisting(target) {
@@ -79,7 +128,7 @@ async function discoverValidationChecks(root) {
   try {
     const pkg = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8'));
     const scripts = pkg.scripts || {};
-    for (const name of ['check', 'test', 'lint', 'typecheck', 'build']) {
+    for (const name of ['check', 'verify', 'test', 'test:unit', 'test:integration', 'test:e2e', 'lint', 'lint:ci', 'typecheck', 'build', 'ci']) {
       if (scripts[name]) add(name === 'test' ? 'npm test' : `npm run ${name}`, `package.json script: ${name}`);
     }
   } catch {}
@@ -104,6 +153,7 @@ async function discoverValidationChecks(root) {
 
 async function walkFiles(root, start, limit = 2000) {
   const output = [];
+  Object.defineProperty(output, 'truncated', { value: false, writable: true, enumerable: false });
   const queue = [start];
 
   while (queue.length && output.length < limit) {
@@ -120,8 +170,12 @@ async function walkFiles(root, start, limit = 2000) {
       if (DEFAULT_IGNORES.has(entry.name)) continue;
       const absolute = path.join(dir, entry.name);
       const relative = path.relative(root, absolute) || '.';
+      if (isSensitiveProjectPath(relative)) continue;
       output.push({ absolute, relative, entry });
-      if (output.length >= limit) break;
+      if (output.length >= limit) {
+        output.truncated = true;
+        break;
+      }
       if (entry.isDirectory() && !entry.isSymbolicLink()) queue.push(absolute);
     }
   }
@@ -129,14 +183,30 @@ async function walkFiles(root, start, limit = 2000) {
   return output;
 }
 
-export async function createTools({ workspace, approveCommand = async () => false }) {
+export async function createTools({
+  workspace,
+  approveCommand = async () => false,
+  environment = process.env,
+  commandSandbox = null,
+  commandSandboxFactory = createCommandSandbox
+}) {
   const root = path.resolve(workspace);
   const resolveSafe = await createResolver(root);
+  const childEnv = subprocessEnvironment(environment);
+  const sandbox = commandSandbox || commandSandboxFactory({ workspace: root, environment: childEnv });
+  const resolveAgentPath = async (relative = '.') => {
+    const resolved = await resolveSafe(relative);
+    const projectRelative = path.relative(root, resolved) || '.';
+    if (isSensitiveProjectPath(projectRelative)) {
+      throw new Error(`Refusing agent access to sensitive project path: ${relative}. Use an explicitly approved shell command if this access is intentional.`);
+    }
+    return resolved;
+  };
 
   const handlers = {
     async project_overview() {
       const topLevel = (await fs.readdir(root, { withFileTypes: true }))
-        .filter((entry) => !DEFAULT_IGNORES.has(entry.name))
+        .filter((entry) => !DEFAULT_IGNORES.has(entry.name) && !isSensitiveProjectPath(entry.name))
         .sort((a, b) => a.name.localeCompare(b.name))
         .slice(0, 80)
         .map((entry) => `${entry.isDirectory() ? '[dir] ' : ''}${entry.name}`);
@@ -168,14 +238,14 @@ export async function createTools({ workspace, approveCommand = async () => fals
           timeout: 10_000,
           windowsHide: true,
           maxBuffer: 1024 * 1024,
-          env: process.env
+          env: childEnv
         });
         git = [stdout, stderr].filter(Boolean).join('').trim() || '(clean Git repository)';
       } catch {}
 
       return clip([
         `root: ${root}`,
-        `files scanned: ${files.length}${entries.length >= 5000 ? '+' : ''}`,
+        `files scanned: ${files.length}${entries.truncated ? '+' : ''}`,
         `common file types: ${commonTypes || '(none)'}`,
         packageInfo,
         `git:\n${git}`,
@@ -185,22 +255,31 @@ export async function createTools({ workspace, approveCommand = async () => fals
     },
 
     async list_files(args) {
-      const start = await resolveSafe(args.path || '.');
+      const start = await resolveAgentPath(args.path || '.');
       const maxEntries = Math.min(Math.max(Number(args.max_entries) || 300, 1), 2000);
       const items = await walkFiles(root, start, maxEntries);
-      return items.map(({ relative, entry }) => `${entry.isDirectory() ? '[dir] ' : ''}${relative}`).join('\n') || '(empty)';
+      const rendered = items.map(({ relative, entry }) => `${entry.isDirectory() ? '[dir] ' : ''}${relative}`).join('\n') || '(empty)';
+      return items.truncated ? `${rendered}\n[listing truncated at ${maxEntries} entries; use a narrower path to continue]` : rendered;
     },
 
     async read_file(args) {
-      const file = await resolveSafe(args.path);
+      const file = await resolveAgentPath(args.path);
       const stat = await fs.stat(file);
       if (!stat.isFile()) throw new Error('Path is not a file.');
-      if (stat.size > MAX_FILE_BYTES) throw new Error(`File is larger than ${MAX_FILE_BYTES} bytes.`);
+      const hasRange = args.start_line !== undefined || args.end_line !== undefined;
+      const requestedStart = Math.max(Number(args.start_line) || 1, 1);
+      const requestedEnd = Math.max(Number(args.end_line) || Number.MAX_SAFE_INTEGER, requestedStart);
+      if (stat.size > MAX_FILE_BYTES) {
+        if (!hasRange) {
+          throw new Error(`File is larger than ${MAX_FILE_BYTES} bytes. Use start_line/end_line to read a bounded range.`);
+        }
+        return readLineRange(file, requestedStart, requestedEnd);
+      }
 
       const text = await fs.readFile(file, 'utf8');
       const lines = text.split(/\r?\n/);
-      const start = Math.max((Number(args.start_line) || 1) - 1, 0);
-      const end = Math.min(Number(args.end_line) || lines.length, lines.length);
+      const start = requestedStart - 1;
+      const end = Math.min(requestedEnd, lines.length);
       const rendered = lines.slice(start, end).map((line, index) => `${start + index + 1}: ${line}`).join('\n');
       return clip(rendered, MAX_FILE_OUTPUT, '...[file read truncated; use start_line/end_line to request a narrower range]');
     },
@@ -215,7 +294,7 @@ export async function createTools({ workspace, approveCommand = async () => fals
     async find_symbol(args) {
       const name = String(args.name || '').trim();
       if (!name) throw new Error('Symbol name cannot be empty.');
-      const start = await resolveSafe(args.path || '.');
+      const start = await resolveAgentPath(args.path || '.');
       const maxResults = Math.min(Math.max(Number(args.max_results) || 50, 1), 200);
       const escaped = escapeRegex(name);
       const patterns = [
@@ -235,17 +314,18 @@ export async function createTools({ workspace, approveCommand = async () => fals
         for (let index = 0; index < lines.length; index += 1) {
           if (patterns.some((pattern) => pattern.test(lines[index]))) {
             results.push(`${relative}:${index + 1}: ${lines[index]}`);
-            if (results.length >= maxResults) return results.join('\n');
+            if (results.length >= maxResults) return `${results.join('\n')}\n[results truncated at ${maxResults}; narrow the search or increase max_results]`;
           }
         }
       }
-      return results.join('\n') || '(no symbol definitions found)';
+      const rendered = results.join('\n') || '(no symbol definitions found in scanned entries)';
+      return entries.truncated ? `${rendered}\n[scan truncated at 5000 entries; use a narrower path to continue]` : rendered;
     },
 
     async find_references(args) {
       const name = String(args.name || '').trim();
       if (!name) throw new Error('Reference name cannot be empty.');
-      const start = await resolveSafe(args.path || '.');
+      const start = await resolveAgentPath(args.path || '.');
       const maxResults = Math.min(Math.max(Number(args.max_results) || 100, 1), 500);
       const matcher = new RegExp(`\\b${escapeRegex(name)}\\b`);
       const entries = await walkFiles(root, start, 5000);
@@ -261,22 +341,30 @@ export async function createTools({ workspace, approveCommand = async () => fals
         for (let index = 0; index < lines.length; index += 1) {
           if (matcher.test(lines[index])) {
             results.push(`${relative}:${index + 1}: ${lines[index]}`);
-            if (results.length >= maxResults) return results.join('\n');
+            if (results.length >= maxResults) return `${results.join('\n')}\n[results truncated at ${maxResults}; narrow the search or increase max_results]`;
           }
         }
       }
-      return results.join('\n') || '(no references found)';
+      const rendered = results.join('\n') || '(no references found in scanned entries)';
+      return entries.truncated ? `${rendered}\n[scan truncated at 5000 entries; use a narrower path to continue]` : rendered;
     },
 
     async write_file(args) {
-      const file = await resolveSafe(args.path);
+      const file = await resolveAgentPath(args.path);
+      let existed = true;
+      try {
+        await fs.access(file);
+      } catch (error) {
+        if (error?.code === 'ENOENT') existed = false;
+        else throw error;
+      }
       await fs.mkdir(path.dirname(file), { recursive: true });
       await fs.writeFile(file, String(args.content ?? ''), 'utf8');
-      return `Wrote ${path.relative(root, file)}.`;
+      return `${existed ? 'Updated' : 'Created'} ${path.relative(root, file)}.`;
     },
 
     async replace_in_file(args) {
-      const file = await resolveSafe(args.path);
+      const file = await resolveAgentPath(args.path);
       const oldText = String(args.old_text ?? '');
       if (!oldText) throw new Error('old_text cannot be empty.');
       const newText = String(args.new_text ?? '');
@@ -304,7 +392,7 @@ export async function createTools({ workspace, approveCommand = async () => fals
       const originals = new Map();
       const updated = new Map();
       for (const change of changes) {
-        const file = await resolveSafe(change.path);
+        const file = await resolveAgentPath(change.path);
         const oldText = String(change.old_text ?? '');
         if (!oldText) throw new Error('Patch old_text cannot be empty. Use write_file for new files.');
         const newText = String(change.new_text ?? '');
@@ -336,14 +424,14 @@ export async function createTools({ workspace, approveCommand = async () => fals
     },
 
     async delete_path(args) {
-      const target = await resolveSafe(args.path);
+      const target = await resolveAgentPath(args.path);
       if (target === root) throw new Error('Refusing to delete the project root.');
       await fs.rm(target, { recursive: true, force: true });
       return `Deleted ${path.relative(root, target)}.`;
     },
 
     async search_files(args) {
-      const start = await resolveSafe(args.path || '.');
+      const start = await resolveAgentPath(args.path || '.');
       const maxResults = Math.min(Math.max(Number(args.max_results) || 100, 1), 500);
       const entries = await walkFiles(root, start, 5000);
       let matcher;
@@ -352,7 +440,7 @@ export async function createTools({ workspace, approveCommand = async () => fals
         try {
           matcher = new RegExp(String(args.query), 'i');
         } catch (error) {
-          throw new Error(`Invalid regular expression: ${error.message}`);
+          throw new Error(`Invalid regular expression: ${error.message}`, { cause: error });
         }
       }
 
@@ -382,12 +470,13 @@ export async function createTools({ workspace, approveCommand = async () => fals
           if (matcher) matcher.lastIndex = 0;
           if (matches) {
             results.push(`${relative}:${index + 1}: ${line}`);
-            if (results.length >= maxResults) return results.join('\n');
+            if (results.length >= maxResults) return `${results.join('\n')}\n[results truncated at ${maxResults}; narrow the search or increase max_results]`;
           }
         }
       }
 
-      return results.join('\n') || '(no matches)';
+      const rendered = results.join('\n') || '(no matches in scanned entries)';
+      return entries.truncated ? `${rendered}\n[scan truncated at 5000 entries; use a narrower path to continue]` : rendered;
     },
 
     async run_process(args, context = {}) {
@@ -405,13 +494,13 @@ export async function createTools({ workspace, approveCommand = async () => fals
       if (!approved) return 'Command denied by user.';
       const timeout = Math.min(Math.max(Number(args.timeout_ms) || 120000, 1000), 900000);
       try {
-        const { stdout, stderr } = await execFile(executable, argv, {
+        const { stdout, stderr } = await sandbox.runProcess({
+          executable,
+          args: argv,
           cwd,
-          timeout,
-          windowsHide: true,
-          maxBuffer: 2 * 1024 * 1024,
-          env: process.env,
-          signal: context.signal
+          signal: context.signal,
+          timeoutMs: timeout,
+          display: shown
         });
         const output = [stdout, stderr].filter(Boolean).join('');
         return clip(output || '(process completed with no output)');
@@ -434,13 +523,12 @@ export async function createTools({ workspace, approveCommand = async () => fals
 
       const timeout = Math.min(Math.max(Number(args.timeout_ms) || 120000, 1000), 900000);
       try {
-        const { stdout, stderr } = await exec(command, {
+        const { stdout, stderr } = await sandbox.runCommand({
+          command,
           cwd,
-          timeout,
-          windowsHide: true,
-          maxBuffer: 2 * 1024 * 1024,
-          env: process.env,
-          signal: context.signal
+          signal: context.signal,
+          timeoutMs: timeout,
+          display: command
         });
         const output = [stdout, stderr].filter(Boolean).join('');
         return clip(output || '(command completed with no output)');
@@ -461,7 +549,7 @@ export async function createTools({ workspace, approveCommand = async () => fals
           timeout: 30000,
           windowsHide: true,
           maxBuffer: 2 * 1024 * 1024,
-          env: process.env
+          env: childEnv
         });
         return clip([stdout, stderr].filter(Boolean).join('') || '(no diff)');
       } catch (error) {

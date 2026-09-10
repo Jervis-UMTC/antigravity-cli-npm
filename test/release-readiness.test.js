@@ -18,7 +18,14 @@ test('release metadata is explicit and production files include hardening module
   assert.equal(pkg.repository.url, 'git+https://github.com/Jervis-UMTC/antigravity-cli-npm.git');
   assert.equal(pkg.bugs.url, 'https://github.com/Jervis-UMTC/antigravity-cli-npm/issues');
   assert.equal(pkg.homepage, 'https://github.com/Jervis-UMTC/antigravity-cli-npm#readme');
-  assert.match(pkg.scripts['release:check'], /npm publish --dry-run --ignore-scripts --json/);
+  assert.doesNotMatch(pkg.scripts['release:check'], /npm publish/);
+  assert.match(pkg.scripts['release:publish-check'], /npm publish --dry-run --ignore-scripts --json/);
+  assert.match(pkg.scripts.lint, /eslint/);
+  assert.match(pkg.scripts.coverage, /c8 --check-coverage/);
+  assert.match(pkg.scripts['release:check'], /npm run lint/);
+  assert.match(pkg.scripts['release:check'], /npm run coverage/);
+  assert.equal(pkg.engines.node, '>=20.11.0 <21 || >=22 <23 || >=24 <25');
+  assert.equal(pkg.scripts.prepare, undefined);
   assert.equal(pkg.scripts.postinstall, 'node scripts/postinstall.js');
   assert.equal(pkg.bin.antigyc, 'bin/agy.js');
   assert.equal(pkg.bin['antigravity-cli-npm'], undefined);
@@ -26,6 +33,7 @@ test('release metadata is explicit and production files include hardening module
   assert.equal(pkg.bin.antigravity, undefined);
   assert.equal(pkg.dependencies.fflate, '0.8.3');
   assert.equal(pkg.dependencies['@lydell/node-pty'], '1.1.0');
+  assert.equal(pkg.dependencies['@anthropic-ai/sandbox-runtime'], '0.0.75');
   assert.equal(pkg.dependencies['@google/gemini-cli'], undefined);
   assert.ok(pkg.keywords.includes('antigyc'));
 
@@ -35,6 +43,10 @@ test('release metadata is explicit and production files include hardening module
   }
 
   const lock = JSON.parse(await fs.readFile(path.join(ROOT, 'package-lock.json'), 'utf8'));
+  const changelog = await fs.readFile(path.join(ROOT, 'CHANGELOG.md'), 'utf8');
+  assert.equal(lock.version, pkg.version);
+  assert.equal(lock.packages[''].version, pkg.version);
+  assert.match(changelog, new RegExp(`^## ${pkg.version.replace(/\./g, '\\.')}(?:\\s|-)+`, 'm'));
   const pty = lock.packages['node_modules/@lydell/node-pty'];
   for (const platformPackage of [
     '@lydell/node-pty-darwin-arm64', '@lydell/node-pty-darwin-x64',
@@ -46,17 +58,23 @@ test('release metadata is explicit and production files include hardening module
   }
 
   assert.ok(pkg.files.includes('LICENSE'));
-  for (const file of ['LICENSE', 'src/settings.js', 'src/init.js', 'src/cancel.js', 'src/doctor.js', 'src/task-state.js', 'scripts/postinstall.js']) {
+  for (const file of ['LICENSE', 'src/settings.js', 'src/init.js', 'src/cancel.js', 'src/command-child.js', 'src/command-sandbox.js', 'src/doctor.js', 'src/task-state.js', 'scripts/postinstall.js']) {
     await fs.access(path.join(ROOT, file));
   }
 
   const workflow = await fs.readFile(path.join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf8');
   for (const runner of ['ubuntu-latest', 'macos-latest', 'windows-latest']) assert.match(workflow, new RegExp(runner));
-  assert.match(workflow, /node: \[20, 22\]/);
+  assert.match(workflow, /node: \[20, 22, 24\]/);
+  assert.match(workflow, /npm audit --audit-level=moderate/);
   assert.match(workflow, /AGYC_SKIP_PROVIDER_INSTALL/);
   assert.match(workflow, /AGYC_SKIP_PATH_SETUP/);
+  assert.match(workflow, /npm run lint/);
+  assert.match(workflow, /npm run coverage/);
+  assert.match(workflow, /bubblewrap socat ripgrep/);
+  assert.match(workflow, /apparmor_restrict_unprivileged_userns/);
   assert.match(pkg.scripts.check, /src\/doctor\.js/);
   assert.match(pkg.scripts.check, /src\/task-state\.js/);
+  assert.match(pkg.scripts.check, /src\/command-sandbox\.js/);
 });
 
 test('npm dry-run tarball contains runtime/license files and excludes tests/provider state', async () => {

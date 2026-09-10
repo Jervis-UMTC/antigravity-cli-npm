@@ -184,8 +184,8 @@ A fresh setup normally uses:
 ```text
 model=gemini-3.8-flash
 auth=google
-turbo=on
-approval=yes
+turbo=off
+approval=ask
 ```
 
 ### Step 6 — attach a screenshot, PDF, document, or code file
@@ -250,24 +250,13 @@ The agent performs project edits in a private OS-temporary staging copy and publ
 
 ## Live agent workflow
 
-While working, `antigyc` reports safe progress events from the coding workflow. The output stays plain terminal text and does not expose private reasoning, provider internals, or secrets.
-
-Typical progress looks like:
-
-```text
-Inspecting project
-Editing: src/app.js
-Created: src/auth/session.js
-Running: npm test
-Verification: checking changes
-Tests passed
-```
+While working, `antigyc` keeps coding-agent events internal. The terminal may show only the single transient plain activity line described above; file names, commands, tool calls, test events, model details, and private reasoning are not streamed to normal output.
 
 The workflow is:
 
 1. Inspect the project.
 2. Make changes in the protected staging workspace.
-3. Report safe file and command activity.
+3. Keep file, command, and tool activity internal while updating only the generic transient phase.
 4. Run available checks and tests.
 5. Repair failures when possible.
 6. Apply completed changes only after verification succeeds.
@@ -289,12 +278,12 @@ The workflow is:
 
 ## Requirements
 
-- Node.js 20 or newer.
+- Node.js 20.11+ on Node 20, or a current Node.js 22/24 release.
 - npm.
 - A Google/Gemini subscription account through Google's official Antigravity CLI backend for the default setup.
 - Direct Gemini API-key mode remains available only when you explicitly select it.
 
-Fresh installs default to **Google subscription auth + turbo mode + no command approval prompts**. `antigyc` uses the official Antigravity CLI only as a hidden headless backend. A normal npm install pre-provisions that backend into a private per-user data location, even when the machine has no Antigravity installation. The provider binary is never added to PATH and never claims this package's `antigyc` command. If pre-provisioning was temporarily offline, the first Google request retries the same bootstrap automatically.
+Fresh installs default to **Google subscription auth + `approval ask` + turbo off**. Autonomous command execution remains available through explicit `--yes`, `--turbo`, `approval yes`, or `turbo on` choices. `antigyc` uses the official Antigravity CLI only as a hidden headless backend. A normal npm install pre-provisions that backend into a private per-user data location, even when the machine has no Antigravity installation. The provider binary is never added to PATH and never claims this package's `antigyc` command. If pre-provisioning was temporarily offline, the first Google request retries the same bootstrap automatically.
 
 ## Detailed setup and configuration
 
@@ -309,7 +298,7 @@ node --version
 npm --version
 ```
 
-`node --version` must report **v20 or newer**. If `node` or `npm` is not recognized, install a current Node.js 20+ release first, open a new terminal, and run the two commands again.
+`node --version` must report **v20.11+**, **v22.x**, or **v24.x**. If `node` or `npm` is not recognized, install a supported current Node.js release first, open a new terminal, and run the two commands again.
 
 ### 2. Install `antigyc`
 
@@ -385,9 +374,9 @@ For your Google/Gemini Pro subscription, do **not** set an API key and do **not*
 antigyc
 ```
 
-A fresh profile starts with `model=gemini-3.8-flash`, `auth=google`, `turbo=on`, and `approval=yes`. On a new device, the first real request may open Google's official browser sign-in once. Sign in with the Google account that owns your Gemini/Google AI Pro subscription, complete browser consent, and return to the terminal; the original request continues automatically. Later sessions reuse the provider's secure account session.
+A fresh profile starts with `model=gemini-3.8-flash`, `reasoning=high`, `auth=google`, `turbo=off`, and `approval=ask`. On a new device, the first real request may open Google's official browser sign-in once. Sign in with the Google account that owns your Gemini/Google AI Pro subscription, complete browser consent, and return to the terminal; the original request continues automatically. Later sessions reuse the provider's secure account session.
 
-To verify the defaults after login, run `status`. Gemini 3.8 Flash is the default. Use `model pro` only when you intentionally want the Pro alias; `reasoning high` is optional when you want the stronger reasoning setting.
+To verify the defaults after login, run `status`. Gemini 3.8 Flash with high reasoning is the default. Use `model pro` only when you intentionally want the Pro alias; use `reasoning low` only when you intentionally want lower reasoning effort.
 
 If you want to explicitly verify or renew the Google session:
 
@@ -518,7 +507,7 @@ Then in another folder:
 mkdir C:\temp\antigyc-test
 cd C:\temp\antigyc-test
 npm init -y
-npm install C:\path\to\antigravity-cli-npm\antigyc-0.1.1.tgz
+npm install C:\path\to\antigravity-cli-npm\antigyc-0.1.2.tgz
 npx antigyc --version
 npx antigyc --help
 npx antigyc
@@ -538,7 +527,7 @@ You do **not** need to install Antigravity separately or run `antigyc login` bef
 
 Google subscription mode now executes through Google's **official Antigravity CLI headless client**, rather than the older Gemini CLI / Code Assist client that rejects personal accounts. The provider binary is invoked by its absolute per-user path, with JSON output captured internally, so its TUI, progress stream, slash commands, banners, and tool narration do not appear inside this wrapper.
 
-The package-managed official backend is deliberately kept out of normal command directories: `%LOCALAPPDATA%\antigravity-cli-npm\provider\agy.exe` on Windows, `~/Library/Application Support/antigravity-cli-npm/provider/agy` on macOS, and `${XDG_DATA_HOME:-~/.local/share}/antigravity-cli-npm/provider/agy` on Linux. `antigyc` installs it from Google's official HTTPS installer using `--skip-path --skip-aliases` and invokes it only by absolute path, so the provider binary cannot take over this package's command name. Managed installs record an external provenance receipt beside the binary with the official installer URL plus SHA-256 hashes of the fetched installer and installed binary. `provider`/`doctor` can detect an unrecorded or changed binary, and `provider update` performs a fresh official install, health-checks it, records the new receipt, and restores the previous managed binary if validation fails. An explicit `ANTIGRAVITY_CLI_BINARY` override remains externally managed and is never silently deleted or updated.
+The package-managed official backend is deliberately kept out of normal command directories: `%LOCALAPPDATA%\antigravity-cli-npm\provider\agy.exe` on Windows, `~/Library/Application Support/antigravity-cli-npm/provider/agy` on macOS, and `${XDG_DATA_HOME:-~/.local/share}/antigravity-cli-npm/provider/agy` on Linux. `antigyc` reads Google's official platform release manifest, accepts release assets only from the official `antigravity-public/antigravity-cli` Google Storage bucket, verifies the downloaded package against the manifest's SHA-512 digest, and only then writes the private provider binary. The downloaded installer/bootstrap script is never executed, and provider installation does not alter PATH or create aliases. Managed installs record the manifest URL, release URL, release SHA-512, and installed-binary SHA-256 beside the binary. Before a managed provider is executed, its current digest must match that receipt; unrecorded or changed binaries are repaired transactionally, with the prior binary/receipt restored if replacement fails. Managed trust is revalidated on each use rather than cached by path. An explicit `ANTIGRAVITY_CLI_BINARY` override must be absolute, remains externally managed, and is health-checked but never silently installed, deleted, or updated by this package.
 
 Authentication is persistent through the official Antigravity secure account session, including Windows Credential Manager on Windows. Normal `antigyc` requests probe that native session automatically and continue silently when it is already usable. On a first use on a new device/user profile, the wrapper starts the official Antigravity binary with no arguments inside a hidden pseudo-terminal rooted in an empty OS-temporary directory. The official client itself opens its Antigravity browser sign-in flow and writes its native secure-keyring session; all provider terminal rendering remains captured and invisible. As soon as the official session becomes usable, the hidden bootstrap process is stopped and `antigyc` performs one headless verification request before continuing the original request. There is no Gemini CLI/Code Assist OAuth fallback, no `oauth_creds.json`, and no credential-migration step.
 
@@ -549,6 +538,16 @@ Antigravity **IDE** is not required. The official Antigravity **CLI backend** is
 `antigyc` is designed to run multi-step coding tasks rather than behave like a single request/response chat. Broad tasks can begin with a compact project overview, discover likely project validation commands, navigate symbol definitions/references, apply focused multi-file patches, run native executables with structured argv when a shell is unnecessary, react to failed checks, revise the implementation, and validate again before returning the final response. Direct API mode allows up to 120 model/tool iterations per instruction, retries transient model-service failures automatically, preserves useful head/tail evidence while bounding large tool/file results, requires a successful post-edit verification pass, and detects repeated identical tool loops so the model is told to change strategy instead of wasting its entire step budget. Google subscription mode delegates the coding loop to the official Antigravity agent with equivalent instructions to continue through inspection, implementation, debugging, and validation rather than stopping at the first failure.
 
 The execution remains transactional while doing this: all autonomous file changes and project commands operate on the disposable staging copy, and only the successful completed result is applied back to the real project.
+
+In direct API-key mode, `run_command` and `run_process` are additionally placed inside an OS-level command sandbox. The sandbox process tree can write only to the disposable staged project and a disposable per-command temp/profile directory; ordinary host locations, including the real project, are not writable. Command execution fails closed when the platform sandbox is unavailable instead of falling back to an ordinary host process. The sandbox uses Seatbelt on macOS, bubblewrap on Linux, and a dedicated sandbox account plus Windows Filtering Platform/ACL boundaries on Windows.
+
+Windows command sandboxing needs a one-time elevated machine setup before direct API command tools can run:
+
+```cmd
+npx @anthropic-ai/sandbox-runtime@0.0.75 windows-install
+```
+
+On Linux, install `bubblewrap`, `socat`, and `ripgrep`; on macOS, install `ripgrep` if it is not already available. `antigyc doctor` reports `command-sandbox=ok ready` when the required backend is usable. File-only agent work does not require this setup. The sandbox allows localhost and a conservative set of common developer package hosts by default; additional trusted destinations can be added from the launching user's environment with `AGYC_SANDBOX_NETWORK`.
 
 Use the Google account associated with the subscription you want Antigravity to use. A brand-new device may still require you to approve Google's browser sign-in once because the provider's secure session is device-local; that is identity consent, not CLI setup. Afterward, normal restarts and projects reuse the session automatically. `antigyc login` remains available only as an explicit verification/renewal command. The wrapper never falls back to Gemini CLI or Code Assist authentication.
 
@@ -629,7 +628,7 @@ Added signup validation and updated the endpoint tests.
 antigyc C:\projects\my-app>
 ```
 
-There is no visible tool stream while the task is running. For requests that take more than a moment, `antigyc` uses one transient plain-text line with simple phases such as `Preparing... 1s`, `Inspecting... 4s`, `Working... 12s`, `Checking... 18s`, and `Applying changes... 21s`. It is not a spinner or progress UI: there are no colors, panels, tool names, model names, reasoning labels, or animations. The line pauses during permission prompts and is erased before the final response or error appears. Pressing Ctrl+C during active work cancels the whole current agent request—not only a child command—including the provider call and any active command. The canceled turn is not appended to conversation history, staged work is discarded/rolled back, and the interactive shell returns `Canceled.` while keeping earlier conversation turns available.
+There is no visible tool stream while the task is running. For requests that take more than a moment, `antigyc` uses one transient plain-text line with simple phases such as `Preparing... 1s`, `Inspecting... 4s`, `Working... 12s`, `Checking... 18s`, and `Applying changes... 21s`. It is not a spinner or progress UI: there are no colors, panels, tool names, model names, reasoning labels, or animations. The line pauses during permission prompts and is erased before the final response or error appears. Pressing Ctrl+C during active work cancels the whole current request—not only a child command—including first-use Google provider setup, browser sign-in polling, subscription verification, the provider call, and any active project command. The canceled turn is not appended to conversation history, staged work is discarded/rolled back, and the interactive shell returns `Canceled.` while keeping earlier conversation turns available.
 
 ## One-shot usage
 
@@ -663,7 +662,7 @@ antigyc C:\project> help
 
 ```text
 antigyc C:\project> status
-model=gemini-3.8-flash reasoning=auto auth=google approval=yes turbo=on backend=ready account=connected attachments=0 history=0
+model=gemini-3.8-flash reasoning=high auth=google approval=ask turbo=off backend=ready account=connected attachments=0 history=0
 ```
 
 `status` is deliberately terse. It is not shown automatically. In Google mode it performs hidden provider health/account probes; in API-key mode it reports whether the key is configured. It also reports `task=pending` when an abnormal prior termination left resumable staged work.
@@ -679,7 +678,7 @@ antigyc C:\project> task clear
 antigyc C:\project> resume
 ```
 
-`doctor` prints plain `name=ok|warn|fail` health lines for the wrapper version, Node/npm, workspace/state writability, command resolution, Google backend/account state, provider provenance, and basic network reachability. `provider` reports the private backend status; `provider update` reinstalls a managed backend from the official installer with post-install validation and rollback. `task` reports whether a crash checkpoint exists, `resume` continues it only if the real-project baseline is still unchanged, and `task clear` deliberately deletes both the checkpoint and its temporary staged copy.
+`doctor` prints plain `name=ok|warn|fail` health lines for the wrapper version, Node/npm, workspace/state writability, command resolution, Google backend/account state, provider provenance, and basic network reachability. `provider` reports the private backend status; `provider update` reinstalls a managed backend through the official manifest + SHA-512 release flow with post-install validation and rollback. `task` reports whether a crash checkpoint exists. `resume` accepts only a physically valid, current-user OS-temp staging container with a validated baseline manifest, verifies that the real-project baseline is still unchanged, and rechecks affected paths again immediately before publication. `task clear` deliberately deletes both the checkpoint and its temporary staged copy.
 
 ### Current directory
 
@@ -841,7 +840,7 @@ antigyc C:\project> turbo
 on
 ```
 
-Use `approval ask` or `turbo off` only when you intentionally want command prompts.
+Use `approval yes` or `turbo on` only when you intentionally want autonomous command execution without prompts.
 
 Autonomous mode:
 
@@ -977,7 +976,7 @@ The general `clear` command also clears persisted conversation history and pendi
 antigyc C:\project> clear
 ```
 
-History stores user messages, final replies, timestamps, and attachment metadata such as attachment names/paths. It does not store internal reasoning or the tool-by-tool execution stream.
+History stores user messages, final replies, timestamps, and minimal attachment metadata (display name, MIME type, and kind). Original attachment filesystem paths are not persisted. Model-facing history is additionally bounded by a UTF-8 byte budget so a long project conversation cannot consume unbounded request context. It does not store internal reasoning or the tool-by-tool execution stream.
 
 ### Relocate external state
 
@@ -1148,6 +1147,8 @@ Short forms:
 | `GEMINI_BASE_URL` | Base URL for direct API-key mode. |
 | `GOOGLE_CLOUD_PROJECT` | Optional/required for some organization or Workspace Google-account environments. |
 | `ANTIGRAVITY_CLI_BINARY` | Optional absolute path override for the official Google Antigravity CLI backend. |
+| `AGYC_PASSTHROUGH_ENV` | Optional comma/space-separated environment-variable names to expose to project/provider subprocesses when they would otherwise be filtered as secret-like. |
+| `AGYC_SANDBOX_NETWORK` | Optional comma/space-separated additional domains allowed for direct API command subprocesses. The built-in list covers localhost and common package/repository hosts. |
 | `AGYC_SKIP_PROVIDER_INSTALL` | Optional opt-out (`1`, `true`, `yes`, `on`) for npm-time provider preinstall; Google mode will still bootstrap on first use. |
 | `AGYC_SKIP_PATH_SETUP` | Optional Windows install/CI opt-out for automatic user-PATH mutation. |
 
@@ -1241,9 +1242,9 @@ Documentation is explicit that the command uses AI/Gemini; the shell-like appear
 
 ## Safety notes
 
-Hidden staging protects the project from partial source publication. It is not a complete operating-system sandbox.
+Hidden staging protects the project from partial source publication. In direct API-key mode, shell/process tools also run inside the OS-level command sandbox described above, which fails closed and restricts filesystem writes to the staged project plus disposable command scratch space. Network destinations are separately allowlisted, and secret-like environment variables stay filtered unless the launching user explicitly opts them in.
 
-A shell command can still have external effects if it deliberately targets locations, services, credentials, package registries, databases, cloud APIs, or network resources outside the project. Keep `approval ask` for unfamiliar projects or prompts and use `approval yes` only when you accept autonomous command execution.
+`approval yes` and turbo mode skip the interactive approval question; they do **not** disable the direct API command sandbox. Google subscription mode uses the official provider's own sandbox in normal `approval ask` operation; explicit Google `approval yes` retains its separately documented provider behavior and should be used only for trusted tasks.
 
 Keep important work backed up or under version control even though Git is not required.
 
@@ -1310,14 +1311,14 @@ Recommended local release verification:
 ```cmd
 npm ci
 npm run release:check
-npm publish --dry-run --json
+npm run release:publish-check
 ```
 
-`release:check` runs syntax validation, the full test suite, a moderate-or-higher vulnerability audit, a package dry-run, and a script-free publish dry-run. The explicit `npm publish --dry-run --json` command then exercises the normal `prepublishOnly` lifecycle exactly as a real publish would, without uploading anything.
+`release:check` runs reusable repository validation: syntax checks, the full test suite, a moderate-or-higher vulnerability audit, and a package dry-run. It remains valid even after the current package version has already been published. `release:publish-check` is separate because npm correctly rejects a publish dry-run when that exact version already exists; run it only for a new version before publishing.
 
 Before the real publish, verify `npm whoami` succeeds for the intended npm account. Then inspect the package contents and only publish when the package name, metadata, license, account, and two-factor/token policy are ready. This package is configured as MIT licensed and includes `LICENSE` in the published files. Its npm metadata points to the GitHub repository, issue tracker, and README homepage.
 
-This repository is currently configured with version `0.1.1` and `publishConfig.access = public`. Publication is a separate explicit step; running the commands above does not publish anything.
+This repository is currently configured with version `0.1.2` and `publishConfig.access = public`. Publication is a separate explicit step; running the commands above does not publish anything.
 
 ## Troubleshooting
 
@@ -1416,7 +1417,7 @@ A previous `antigyc` process ended abnormally after its staged transaction was p
 
 ### Provider provenance is `unrecorded` or `changed`
 
-`unrecorded` means the binary predates the provenance receipt or was supplied outside the current managed install flow. `changed` means its current SHA-256 no longer matches the recorded managed-binary digest. `antigyc provider update` performs a fresh managed install from the official Google installer and rolls back if the replacement fails its health check. An `ANTIGRAVITY_CLI_BINARY` override is external and cannot be updated by this command.
+`unrecorded` means the managed binary predates the provenance receipt. `changed` means its current SHA-256 no longer matches the recorded managed-binary digest. Normal managed-provider use repairs either state before executing the provider, and the repair rolls back if the replacement cannot be verified and health-checked. `antigyc provider update` performs the same transactional replacement explicitly. An `ANTIGRAVITY_CLI_BINARY` override must be an absolute path, is treated as external, and is never installed or updated by this package.
 
 ### Where is conversation history stored?
 

@@ -23,6 +23,7 @@ export function createActivityIndicator(stream, {
   let renderedWidth = 0;
   let paused = false;
   let stopped = false;
+  let delayElapsed = false;
   let fixedMessage = null;
   let phase = 'Working';
 
@@ -51,8 +52,10 @@ export function createActivityIndicator(stream, {
 
   const schedule = () => {
     if (!enabled || paused || stopped) return;
+    delayElapsed = false;
     delayTimer = setTimeoutImpl(() => {
       delayTimer = null;
+      delayElapsed = true;
       render();
       if (paused || stopped) return;
       intervalTimer = setIntervalImpl(render, intervalMs);
@@ -68,12 +71,12 @@ export function createActivityIndicator(stream, {
       if (stopped) return;
       phase = String(message || '').trim().replace(/\.\.\.$/, '') || 'Working';
       fixedMessage = null;
-      if (enabled && !paused) render();
+      if (enabled && !paused && delayElapsed) render();
     },
     setMessage(message) {
       if (stopped) return;
       fixedMessage = String(message || '').trim() || null;
-      if (enabled && !paused) render();
+      if (enabled && !paused && delayElapsed) render();
     },
     emit(event) {
       if (stopped || !event) return;

@@ -3,8 +3,7 @@ import path from 'node:path';
 import readline from 'node:readline/promises';
 import { stdin as input, stdout as output } from 'node:process';
 import { CodingAgent, defaults, discoverApiModels } from './agent.js';
-import { createActivityIndicator, renderActivityEvent } from './activity.js';
-import { createEventSink } from './events.js';
+import { createActivityIndicator } from './activity.js';
 import { attachmentSummary, resolveAttachment } from './attachments.js';
 import { isCancellation } from './cancel.js';
 import { renderDoctor, runDoctor } from './doctor.js';
@@ -141,10 +140,10 @@ export function createGoogleAuthBootstrap(options, {
     markReady() {
       ready = true;
     },
-    async ensure() {
+    async ensure({ signal } = {}) {
       if (resolveAuthMode(options) !== 'google') return false;
       if (ready) return true;
-      await login({ notify });
+      await login({ notify, signal });
       ready = true;
       return true;
     }
@@ -298,9 +297,7 @@ async function executeAgentTask({
     }
 
     activity?.setPhase('Inspecting');
-    const agent = await buildAgent(options, rl, staging.workspace, workspace, conversation, () => activity, createEventSink((event) => {
-      if (event) output.write(`${renderActivityEvent(event)}\n`);
-    }));
+    const agent = await buildAgent(options, rl, staging.workspace, workspace, conversation, () => activity);
     const answer = await agent.prompt(modelPrompt, {
       attachments: stagedAttachments,
       signal: controller?.signal
@@ -354,11 +351,11 @@ async function runInteractive(options, workspace, settingsStore) {
     if (!resume && existing) {
       throw new Error('An interrupted task is available. Run `resume` to continue it or `task clear` to discard it.');
     }
-    await authBootstrap.ensure();
-    activeIndicator = createActivityIndicator(output);
-    activeIndicator.setPhase('Preparing');
     activeController = new AbortController();
     try {
+      await authBootstrap.ensure({ signal: activeController.signal });
+      activeIndicator = createActivityIndicator(output);
+      activeIndicator.setPhase('Preparing');
       return await executeAgentTask({
         options,
         rl,
@@ -481,11 +478,18 @@ async function runInteractive(options, workspace, settingsStore) {
         continue;
       }
       if (line === 'login') {
+        activeController = new AbortController();
         try {
-          await loginWithGoogle({ notify: (message) => output.write(`${message}\n`) });
+          await loginWithGoogle({
+            notify: (message) => output.write(`${message}\n`),
+            signal: activeController.signal
+          });
           authBootstrap.markReady();
         } catch (error) {
-          output.write(`\nError: ${error instanceof Error ? error.message : String(error)}\n\n`);
+          if (isCancellation(error)) output.write('\nCanceled.\n\n');
+          else output.write(`\nError: ${error instanceof Error ? error.message : String(error)}\n\n`);
+        } finally {
+          activeController = null;
         }
         continue;
       }
@@ -679,7 +683,17 @@ export async function main(argv = process.argv.slice(2)) {
   }
 
   if (parsedOptions.command === 'login') {
-    await loginWithGoogle({ notify: (message) => output.write(`${message}\n`) });
+    const controller = new AbortController();
+    const onSigint = () => controller.abort();
+    process.once('SIGINT', onSigint);
+    try {
+      await loginWithGoogle({
+        notify: (message) => output.write(`${message}\n`),
+        signal: controller.signal
+      });
+    } finally {
+      process.off('SIGINT', onSigint);
+    }
     return;
   }
 
@@ -711,14 +725,15 @@ export async function main(argv = process.argv.slice(2)) {
       throw new Error('An interrupted task is available. Run `antigyc resume` to continue it or `antigyc task clear` to discard it.');
     }
 
-    await authBootstrap.ensure();
-    const attachments = shouldResume ? [] : await resolveAttachmentList(options.attachments, workspace);
     const controller = new AbortController();
-    const indicator = createActivityIndicator(output);
-    indicator.setPhase('Preparing');
+    let indicator = null;
     const onSigint = () => controller.abort();
     process.once('SIGINT', onSigint);
     try {
+      await authBootstrap.ensure({ signal: controller.signal });
+      const attachments = shouldResume ? [] : await resolveAttachmentList(options.attachments, workspace);
+      indicator = createActivityIndicator(output);
+      indicator.setPhase('Preparing');
       const result = await executeAgentTask({
         options,
         rl: null,
@@ -746,7 +761,7 @@ export async function main(argv = process.argv.slice(2)) {
         output.write(`Error: Conversation history was not saved: ${historyError instanceof Error ? historyError.message : String(historyError)}\n`);
       }
     } finally {
-      indicator.stop();
+      indicator?.stop();
       process.off('SIGINT', onSigint);
     }
     return;

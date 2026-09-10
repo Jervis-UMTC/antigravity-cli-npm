@@ -6,6 +6,9 @@ import path from 'node:path';
 const MAX_MESSAGES = 200;
 const MODEL_HISTORY_MESSAGES = 30;
 const MAX_MESSAGE_CHARS = 24_000;
+const MAX_MODEL_HISTORY_BYTES = 160 * 1024;
+const MAX_ATTACHMENTS_PER_MESSAGE = 20;
+const HISTORY_VERSION = 1;
 
 function canonicalWorkspace(workspace) {
   const resolved = path.resolve(workspace);
@@ -30,11 +33,10 @@ function normalizeMessages(messages) {
       role: item.role,
       text: trimText(item.text),
       attachments: Array.isArray(item.attachments) ? item.attachments.map((attachment) => ({
-        name: String(attachment.name || ''),
-        path: String(attachment.path || ''),
-        mimeType: String(attachment.mimeType || ''),
-        kind: String(attachment.kind || '')
-      })) : [],
+        name: String(attachment.name || '').slice(0, 256),
+        mimeType: String(attachment.mimeType || '').slice(0, 128),
+        kind: String(attachment.kind || '').slice(0, 32)
+      })).slice(0, MAX_ATTACHMENTS_PER_MESSAGE) : [],
       at: typeof item.at === 'string' ? item.at : new Date().toISOString()
     }))
     .slice(-MAX_MESSAGES);
@@ -55,10 +57,13 @@ export async function createHistoryStore(workspace, { baseDir } = {}) {
     try {
       const raw = await fs.readFile(file, 'utf8');
       const parsed = JSON.parse(raw);
+      if (parsed?.version !== undefined && parsed.version !== HISTORY_VERSION) {
+        throw new Error(`Unsupported conversation history version ${String(parsed.version)}: ${file}`);
+      }
       return normalizeMessages(parsed.messages);
     } catch (error) {
       if (error?.code === 'ENOENT') return [];
-      if (error instanceof SyntaxError) throw new Error(`Conversation history is invalid: ${file}`);
+      if (error instanceof SyntaxError) throw new Error(`Conversation history is invalid: ${file}`, { cause: error });
       throw error;
     }
   }
@@ -70,7 +75,7 @@ export async function createHistoryStore(workspace, { baseDir } = {}) {
       return;
     }
     await writeJsonAtomic(file, {
-      version: 1,
+      version: HISTORY_VERSION,
       workspace: path.resolve(workspace),
       messages: normalized
     });
@@ -105,7 +110,17 @@ export function appendConversationTurn(messages, text, attachments, answer) {
 }
 
 export function conversationForModel(messages) {
-  return normalizeMessages(messages).slice(-MODEL_HISTORY_MESSAGES);
+  const recent = normalizeMessages(messages).slice(-MODEL_HISTORY_MESSAGES);
+  const selected = [];
+  let bytes = 0;
+  for (let index = recent.length - 1; index >= 0; index -= 1) {
+    const message = recent[index];
+    const messageBytes = Buffer.byteLength(JSON.stringify(message), 'utf8');
+    if (selected.length > 0 && bytes + messageBytes > MAX_MODEL_HISTORY_BYTES) break;
+    selected.push(message);
+    bytes += messageBytes;
+  }
+  return selected.reverse();
 }
 
 export function conversationAsText(messages) {

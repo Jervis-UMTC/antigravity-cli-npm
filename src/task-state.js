@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { lstatSync, realpathSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -21,10 +22,27 @@ function inside(root, candidate) {
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
+function samePath(left, right) {
+  const a = path.resolve(left);
+  const b = path.resolve(right);
+  return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
 export function isSafeTaskContainer(container, { tempRoot = os.tmpdir() } = {}) {
   if (!container) return false;
+  const resolvedTemp = path.resolve(tempRoot);
   const resolved = path.resolve(container);
-  return inside(tempRoot, resolved) && path.basename(resolved).startsWith('agyc-stage-');
+  if (!path.basename(resolved).startsWith('agyc-stage-') || !samePath(path.dirname(resolved), resolvedTemp)) return false;
+  try {
+    const stat = lstatSync(resolved);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) return false;
+    if (typeof process.getuid === 'function' && Number.isInteger(stat.uid) && stat.uid !== process.getuid()) return false;
+    const realTemp = realpathSync(resolvedTemp);
+    const realContainer = realpathSync(resolved);
+    return path.basename(realContainer).startsWith('agyc-stage-') && samePath(path.dirname(realContainer), realTemp);
+  } catch {
+    return false;
+  }
 }
 
 export function taskStatePath(workspace, options = {}) {
@@ -38,7 +56,6 @@ function normalizeAttachments(items, container) {
     if (!inside(container, stagedPath)) throw new Error('Interrupted task attachment path is outside its staging container.');
     return {
       name: String(item?.name || ''),
-      sourcePath: String(item?.sourcePath || ''),
       stagedPath,
       mimeType: String(item?.mimeType || ''),
       kind: String(item?.kind || ''),
@@ -83,7 +100,7 @@ export async function createTaskStore(workspace, options = {}) {
       };
     } catch (error) {
       if (error?.code === 'ENOENT') return null;
-      if (error instanceof SyntaxError) throw new Error(`Interrupted task state is invalid: ${file}`);
+      if (error instanceof SyntaxError) throw new Error(`Interrupted task state is invalid: ${file}`, { cause: error });
       throw error;
     }
   }
