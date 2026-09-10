@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { createGoogleAuthBootstrap, plainTerminalText, promptLabel } from '../src/cli.js';
+import { applyAuthMode, createGoogleAuthBootstrap, plainTerminalText, promptLabel, runWithGoogleAuthRecovery } from '../src/cli.js';
 import { commandSandboxReadiness } from '../src/command-sandbox.js';
 import { appendConversationTurn, createHistoryStore } from '../src/history.js';
 import { createStagingWorkspace } from '../src/staging.js';
@@ -236,10 +236,12 @@ test('normal Google use bootstraps authentication once without a separate login 
   const options = { auth: 'google' };
   const notices = [];
   let loginCalls = 0;
+  const forceValues = [];
   const bootstrap = createGoogleAuthBootstrap(options, {
     notify: (message) => notices.push(message),
-    login: async ({ notify }) => {
+    login: async ({ notify, force }) => {
       loginCalls += 1;
+      forceValues.push(force);
       notify('browser sign-in');
     }
   });
@@ -257,6 +259,11 @@ test('normal Google use bootstraps authentication once without a separate login 
   options.auth = 'google';
   assert.equal(await bootstrap.ensure(), true);
   assert.equal(loginCalls, 2);
+  assert.deepEqual(forceValues, [false, false]);
+
+  assert.equal(await bootstrap.ensure({ force: true }), true);
+  assert.equal(loginCalls, 3);
+  assert.deepEqual(forceValues, [false, false, true]);
 });
 
 test('Google auth bootstrap forwards the request AbortSignal to login', async () => {
@@ -271,6 +278,84 @@ test('Google auth bootstrap forwards the request AbortSignal to login', async ()
 
   assert.equal(await bootstrap.ensure({ signal: controller.signal }), true);
   assert.equal(receivedSignal, controller.signal);
+});
+
+test('auth google persists the mode and authenticates immediately', async () => {
+  const options = { auth: 'api-key' };
+  const updates = [];
+  let resets = 0;
+  let ensures = 0;
+  const controller = new AbortController();
+
+  await applyAuthMode('google', {
+    options,
+    settingsStore: { update: async (value) => updates.push(value) },
+    authBootstrap: {
+      reset() { resets += 1; },
+      async ensure({ signal, force }) {
+        ensures += 1;
+        assert.equal(signal, controller.signal);
+        assert.equal(force, true);
+        return true;
+      }
+    },
+    signal: controller.signal
+  });
+
+  assert.equal(options.auth, 'google');
+  assert.deepEqual(updates, [{ auth: 'google' }]);
+  assert.equal(resets, 1);
+  assert.equal(ensures, 1);
+});
+
+test('Google request transparently reauthenticates and retries once after an auth-expiry error', async () => {
+  const options = { auth: 'google' };
+  let ensures = 0;
+  let resets = 0;
+  let actions = 0;
+  const forceValues = [];
+  const authBootstrap = {
+    async ensure({ force = false } = {}) { ensures += 1; forceValues.push(force); return true; },
+    reset() { resets += 1; }
+  };
+
+  const result = await runWithGoogleAuthRecovery(options, authBootstrap, async () => {
+    actions += 1;
+    if (actions === 1) {
+      const error = new Error('sign in required');
+      error.code = 'GOOGLE_AUTH_REQUIRED';
+      throw error;
+    }
+    return 'ok';
+  });
+
+  assert.equal(result, 'ok');
+  assert.equal(actions, 2);
+  assert.equal(ensures, 2);
+  assert.equal(resets, 1);
+  assert.deepEqual(forceValues, [false, true]);
+});
+
+test('resume does not discard and restart preserved work after an auth-expiry error', async () => {
+  const options = { auth: 'google' };
+  let actions = 0;
+  let resets = 0;
+  const error = new Error('sign in required');
+  error.code = 'GOOGLE_AUTH_REQUIRED';
+
+  await assert.rejects(
+    () => runWithGoogleAuthRecovery(options, {
+      async ensure() { return true; },
+      reset() { resets += 1; }
+    }, async () => {
+      actions += 1;
+      throw error;
+    }, { resume: true }),
+    (caught) => caught === error
+  );
+
+  assert.equal(actions, 1);
+  assert.equal(resets, 0);
 });
 
 test('message shorthand sends one-shot text and capital M selects a model', async () => {

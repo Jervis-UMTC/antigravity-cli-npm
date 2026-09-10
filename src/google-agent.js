@@ -701,13 +701,14 @@ export async function runOfficialAntigravityLogin({
   ensureImpl = ensureOfficialAntigravityCli,
   accountProbe = probeOfficialAntigravityAccount,
   ptyLoader = loadAntigravityPty,
+  skipInitialProbe = false,
   timeoutMs = ANTIGRAVITY_LOGIN_TIMEOUT_MS,
   pollMs = ANTIGRAVITY_LOGIN_POLL_MS,
   env = process.env,
   signal
 } = {}) {
   throwIfAborted(signal);
-  if (await accountProbe({ ensureImpl, signal })) return true;
+  if (!skipInitialProbe && await accountProbe({ ensureImpl, signal })) return true;
 
   const binary = await ensureImpl({ signal });
   throwIfAborted(signal);
@@ -760,7 +761,9 @@ export async function runOfficialAntigravityLogin({
     throw new Error(`Official Antigravity sign-in timed out${detail ? `: ${detail}` : '.'}`);
   } finally {
     try { terminal?.kill?.(); } catch {}
-    await fs.rm(cwd, { recursive: true, force: true });
+    try {
+      await fs.rm(cwd, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+    } catch {}
   }
 }
 
@@ -939,6 +942,7 @@ async function probeOfficialAntigravityAccount({
 export async function verifyOfficialAntigravitySubscription({
   ensureImpl = ensureOfficialAntigravityCli,
   captureImpl = captureExecutable,
+  env = process.env,
   signal
 } = {}) {
   throwIfAborted(signal);
@@ -950,7 +954,7 @@ export async function verifyOfficialAntigravitySubscription({
       '--output-format', 'json',
       '--disable-slash-commands',
       '--print-timeout', '1m'
-    ], { cwd, env: googleAccountEnv(process.env), timeoutMs: 75_000, signal });
+    ], { cwd, env: googleAccountEnv(env), timeoutMs: 75_000, signal });
     if (result.code !== 0) {
       const detail = sanitizeProviderDetail(result.stderr || result.stdout);
       throw new Error(`Google subscription verification failed${detail ? `: ${detail}` : '.'}`);
@@ -969,7 +973,8 @@ export async function googleRuntimeStatus({
   env = process.env,
   binaryPath = officialAntigravityBinaryPath({ env }),
   captureImpl = captureExecutable,
-  provenanceImpl = providerProvenanceStatus
+  provenanceImpl = providerProvenanceStatus,
+  verifyImpl = verifyOfficialAntigravitySubscription
 } = {}) {
   const override = String(env.ANTIGRAVITY_CLI_BINARY || '').trim();
   if (!override) {
@@ -986,11 +991,18 @@ export async function googleRuntimeStatus({
   const backend = await probeOfficialAntigravityBinary({ binaryPath, captureImpl });
   if (!backend.ready) return { backend: backend.error === 'missing' ? 'missing' : 'broken', account: 'unknown', version: null };
   try {
-    const result = await captureImpl(binaryPath, ['models'], { env: googleAccountEnv(env), timeoutMs: 15_000 });
-    const connected = result.code === 0 && parseAntigravityModels(result.stdout).length > 0;
-    return { backend: 'ready', account: connected ? 'connected' : 'login-required', version: backend.version };
-  } catch {
-    return { backend: 'ready', account: 'login-required', version: backend.version };
+    await verifyImpl({
+      ensureImpl: async () => binaryPath,
+      captureImpl,
+      env
+    });
+    return { backend: 'ready', account: 'connected', version: backend.version };
+  } catch (error) {
+    return {
+      backend: 'ready',
+      account: isGoogleAuthFailure(error?.message) ? 'login-required' : 'unknown',
+      version: backend.version
+    };
   }
 }
 
@@ -999,20 +1011,31 @@ export async function loginWithGoogle({
   officialProbe = probeOfficialAntigravityAccount,
   officialLogin = runOfficialAntigravityLogin,
   officialVerify = verifyOfficialAntigravitySubscription,
+  force = false,
   signal
 } = {}) {
   throwIfAborted(signal);
-  if (await officialProbe({ signal })) return;
+  const verifiedProbe = async ({ signal: probeSignal = signal } = {}) => {
+    try {
+      await officialVerify({ signal: probeSignal });
+      return true;
+    } catch (error) {
+      if (isCancellation(error) || probeSignal?.aborted) throw cancellationError();
+      if (isGoogleAuthFailure(error?.message)) return false;
+      throw error;
+    }
+  };
+
+  if (!force && await officialProbe({ signal })) return;
+  if (await verifiedProbe({ signal })) return;
 
   notify('Complete sign-in in your browser.');
-  await officialLogin({ accountProbe: officialProbe, signal });
+  await officialLogin({ accountProbe: verifiedProbe, skipInitialProbe: true, signal });
 
   throwIfAborted(signal);
-  if (!await officialProbe({ signal })) {
+  if (!await verifiedProbe({ signal })) {
     throw new Error('Official Antigravity sign-in completed without creating a usable subscription session.');
   }
-
-  await officialVerify({ signal });
 }
 
 export class GoogleAccountAgent {

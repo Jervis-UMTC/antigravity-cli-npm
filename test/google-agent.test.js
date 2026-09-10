@@ -370,15 +370,39 @@ test('Google runtime status reports backend readiness and account connectivity f
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-runtime-status-'));
   const binaryPath = path.join(root, 'agy.exe');
   await fs.writeFile(binaryPath, 'placeholder', 'utf8');
+  let verifyCalls = 0;
   try {
     const status = await googleRuntimeStatus({
       binaryPath,
       provenanceImpl: async () => ({ status: 'verified' }),
-      captureImpl: async (_binary, args) => args[0] === '--version'
-        ? { code: 0, stdout: '1.2.3\n', stderr: '' }
-        : { code: 0, stdout: 'gemini-3.8-flash-high\tGemini 3.8 Flash (High)\n', stderr: 'Fetching...' }
+      captureImpl: async () => ({ code: 0, stdout: '1.2.3\n', stderr: '' }),
+      verifyImpl: async ({ ensureImpl }) => {
+        verifyCalls += 1;
+        assert.equal(await ensureImpl(), binaryPath);
+        return true;
+      }
     });
     assert.deepEqual(status, { backend: 'ready', account: 'connected', version: '1.2.3' });
+    assert.equal(verifyCalls, 1);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Google runtime status does not report connected when subscription verification requires sign-in', async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'agy-runtime-auth-status-'));
+  const binaryPath = path.join(root, 'agy.exe');
+  await fs.writeFile(binaryPath, 'placeholder', 'utf8');
+  try {
+    const status = await googleRuntimeStatus({
+      binaryPath,
+      provenanceImpl: async () => ({ status: 'verified' }),
+      captureImpl: async () => ({ code: 0, stdout: '1.2.3\n', stderr: '' }),
+      verifyImpl: async () => {
+        throw new Error('Google subscription verification failed: authentication required');
+      }
+    });
+    assert.deepEqual(status, { backend: 'ready', account: 'login-required', version: '1.2.3' });
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
@@ -567,6 +591,32 @@ test('official login launches the Antigravity binary with no arguments in a hidd
   assert.equal(killed, true);
 });
 
+test('official login can skip a previously disproved initial account probe and still launch browser sign-in', async () => {
+  let spawned = 0;
+  const terminal = {
+    onData() {},
+    onExit() {},
+    kill() {}
+  };
+
+  const result = await runOfficialAntigravityLogin({
+    ensureImpl: async () => 'official-agy',
+    accountProbe: async () => true,
+    skipInitialProbe: true,
+    ptyLoader: async () => ({
+      spawn() {
+        spawned += 1;
+        return terminal;
+      }
+    }),
+    pollMs: 1,
+    timeoutMs: 50
+  });
+
+  assert.equal(result, true);
+  assert.equal(spawned, 1);
+});
+
 test('official login reports provider exit without exposing terminal escape sequences', async () => {
   const terminal = {
     onData(callback) { callback('\u001b[31mAuthentication failed\u001b[0m'); },
@@ -621,50 +671,53 @@ test('official login cancellation terminates the hidden PTY and rejects as Abort
 
 test('agy login delegates first-run authentication to official Antigravity and verifies it', async () => {
   const notices = [];
-  let connected = false;
   let loginCalls = 0;
   let verifyCalls = 0;
 
   await loginWithGoogle({
     notify: (message) => notices.push(message),
-    officialProbe: async () => connected,
-    officialLogin: async () => {
+    officialProbe: async () => false,
+    officialLogin: async ({ accountProbe, skipInitialProbe }) => {
       loginCalls += 1;
-      connected = true;
+      assert.equal(skipInitialProbe, true);
+      assert.equal(await accountProbe(), true);
       return true;
     },
     officialVerify: async () => {
       verifyCalls += 1;
+      if (verifyCalls === 1) throw new Error('authentication required');
       return true;
     }
   });
 
   assert.deepEqual(notices, ['Complete sign-in in your browser.']);
   assert.equal(loginCalls, 1);
-  assert.equal(verifyCalls, 1);
+  assert.equal(verifyCalls, 3);
 });
 
-test('Google login propagates one AbortSignal through probe, browser login, and verification', async () => {
+test('Google login propagates one AbortSignal through browser login and verified subscription probes', async () => {
   const controller = new AbortController();
   const seen = [];
-  let connected = false;
+  let verifyCalls = 0;
 
   await loginWithGoogle({
     signal: controller.signal,
     officialProbe: async ({ signal }) => {
       seen.push(['probe', signal]);
-      return connected;
+      return false;
     },
-    officialLogin: async ({ signal }) => {
+    officialLogin: async ({ signal, skipInitialProbe }) => {
       seen.push(['login', signal]);
-      connected = true;
+      assert.equal(skipInitialProbe, true);
     },
     officialVerify: async ({ signal }) => {
       seen.push(['verify', signal]);
+      verifyCalls += 1;
+      if (verifyCalls === 1) throw new Error('authentication required');
     }
   });
 
-  assert.deepEqual(seen.map(([name]) => name), ['probe', 'login', 'probe', 'verify']);
+  assert.deepEqual(seen.map(([name]) => name), ['probe', 'verify', 'login', 'verify']);
   assert.equal(seen.every(([, signal]) => signal === controller.signal), true);
 });
 
@@ -697,6 +750,47 @@ test('login reuses an existing official Antigravity keyring session silently', a
   assert.deepEqual(notices, []);
   assert.equal(loginCalls, 0);
   assert.equal(verifyCalls, 0);
+});
+
+test('forced Google login verifies an existing fast-probe session before declaring it ready', async () => {
+  let loginCalls = 0;
+  let verifyCalls = 0;
+
+  await loginWithGoogle({
+    force: true,
+    officialProbe: async () => true,
+    officialLogin: async () => { loginCalls += 1; },
+    officialVerify: async () => { verifyCalls += 1; }
+  });
+
+  assert.equal(loginCalls, 0);
+  assert.equal(verifyCalls, 1);
+});
+
+test('login opens browser flow when subscription verification says authentication is required', async () => {
+  const notices = [];
+  let loginCalls = 0;
+  let verifyCalls = 0;
+
+  await loginWithGoogle({
+    notify: (message) => notices.push(message),
+    force: true,
+    officialLogin: async ({ skipInitialProbe }) => {
+      loginCalls += 1;
+      assert.equal(skipInitialProbe, true);
+    },
+    officialVerify: async () => {
+      verifyCalls += 1;
+      if (verifyCalls === 1) {
+        throw new Error('Google subscription verification failed: authentication required');
+      }
+      return true;
+    }
+  });
+
+  assert.deepEqual(notices, ['Complete sign-in in your browser.']);
+  assert.equal(loginCalls, 1);
+  assert.equal(verifyCalls, 2);
 });
 
 test('official login times out and always terminates its hidden PTY', async () => {

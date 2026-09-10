@@ -186,14 +186,48 @@ export function createGoogleAuthBootstrap(options, {
     markReady() {
       ready = true;
     },
-    async ensure({ signal } = {}) {
+    async ensure({ signal, force = false } = {}) {
       if (resolveAuthMode(options) !== 'google') return false;
-      if (ready) return true;
-      await login({ notify, signal });
+      if (ready && !force) return true;
+      await login({ notify, signal, force });
       ready = true;
       return true;
     }
   };
+}
+
+export async function runWithGoogleAuthRecovery(options, authBootstrap, action, {
+  signal,
+  resume = false
+} = {}) {
+  await authBootstrap.ensure({ signal });
+  try {
+    return await action();
+  } catch (error) {
+    if (resume || resolveAuthMode(options) !== 'google' || error?.code !== 'GOOGLE_AUTH_REQUIRED') throw error;
+    authBootstrap.reset();
+    await authBootstrap.ensure({ signal, force: true });
+    return action();
+  }
+}
+
+export async function applyAuthMode(auth, {
+  options,
+  settingsStore,
+  authBootstrap,
+  env = process.env,
+  signal
+}) {
+  if (!['auto', 'google', 'api-key'].includes(auth)) {
+    throw new Error('Authentication must be auto, google, or api-key.');
+  }
+  if (auth === 'api-key' && !env.GEMINI_API_KEY) {
+    throw new Error('Missing GEMINI_API_KEY for API-key mode.');
+  }
+  await settingsStore.update({ auth });
+  options.auth = auth;
+  authBootstrap.reset();
+  if (auth === 'google') await authBootstrap.ensure({ signal, force: true });
 }
 
 async function buildAgent(options, rl, stagedWorkspace, displayWorkspace, history = [], getActivity = () => null, onEvent = () => {}) {
@@ -415,21 +449,23 @@ async function runInteractive(options, workspace, settingsStore) {
     }
     activeController = new AbortController();
     try {
-      await authBootstrap.ensure({ signal: activeController.signal });
       activeIndicator = createActivityIndicator(output);
       activeIndicator.setPhase('Preparing');
-      return await executeAgentTask({
-        options,
-        rl,
-        workspace,
-        conversation,
-        attachments: pendingAttachments,
-        text,
-        resume,
-        taskStore,
-        controller: activeController,
-        activity: activeIndicator
-      });
+      return await runWithGoogleAuthRecovery(options, authBootstrap, () => executeAgentTask({
+          options,
+          rl,
+          workspace,
+          conversation,
+          attachments: pendingAttachments,
+          text,
+          resume,
+          taskStore,
+          controller: activeController,
+          activity: activeIndicator
+        }), {
+          signal: activeController.signal,
+          resume
+        });
     } finally {
       activeIndicator?.stop();
       activeIndicator = null;
@@ -544,6 +580,7 @@ async function runInteractive(options, workspace, settingsStore) {
         try {
           await loginWithGoogle({
             notify: (message) => output.write(`${message}\n`),
+            force: true,
             signal: activeController.signal
           });
           authBootstrap.markReady();
@@ -630,17 +667,17 @@ async function runInteractive(options, workspace, settingsStore) {
         else if (auth === 'list') output.write('auto\ngoogle\napi-key\n\n');
         else {
           try {
-            if (!['auto', 'google', 'api-key'].includes(auth)) {
-              throw new Error('Authentication must be auto, google, or api-key.');
-            }
-            if (auth === 'api-key' && !process.env.GEMINI_API_KEY) {
-              throw new Error('Missing GEMINI_API_KEY for API-key mode.');
-            }
-            await settingsStore.update({ auth });
-            options.auth = auth;
-            authBootstrap.reset();
+            activeController = new AbortController();
+            await applyAuthMode(auth, {
+              options,
+              settingsStore,
+              authBootstrap,
+              signal: activeController.signal
+            });
           } catch (error) {
             output.write(`\nError: ${error instanceof Error ? error.message : String(error)}\n\n`);
+          } finally {
+            activeController = null;
           }
         }
         continue;
@@ -751,6 +788,7 @@ export async function main(argv = process.argv.slice(2)) {
     try {
       await loginWithGoogle({
         notify: (message) => output.write(`${message}\n`),
+        force: true,
         signal: controller.signal
       });
     } finally {
@@ -794,22 +832,24 @@ export async function main(argv = process.argv.slice(2)) {
     const onSigint = () => controller.abort();
     process.once('SIGINT', onSigint);
     try {
-      await authBootstrap.ensure({ signal: controller.signal });
       const attachments = shouldResume ? [] : await resolveAttachmentList(options.attachments, workspace);
       indicator = createActivityIndicator(output);
       indicator.setPhase('Preparing');
-      const result = await executeAgentTask({
-        options,
-        rl: null,
-        workspace,
-        conversation,
-        attachments,
-        text: shouldResume ? null : options.print,
-        resume: shouldResume,
-        taskStore,
-        controller,
-        activity: indicator
-      });
+      const result = await runWithGoogleAuthRecovery(options, authBootstrap, () => executeAgentTask({
+          options,
+          rl: null,
+          workspace,
+          conversation,
+          attachments,
+          text: shouldResume ? null : options.print,
+          resume: shouldResume,
+          taskStore,
+          controller,
+          activity: indicator
+        }), {
+          signal: controller.signal,
+          resume: shouldResume
+        });
       indicator.stop();
       const updated = appendConversationTurn(
         conversation,
