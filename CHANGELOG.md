@@ -10,7 +10,12 @@ All notable changes to the `antigyc` npm package are documented here.
 - Corrected event success reporting for failed or denied commands and file-path reporting for multi-file patches.
 - Expanded release syntax checks to include the event module and aligned repository issue templates with the public `antigyc` command and this repository.
 - Render final CLI answers as plain terminal text and suppress Markdown formatting markers even if a provider returns them.
-- Bound model-facing conversation history by size as well as message count, preserve both ends of oversized history entries, compact old direct-agent tool exchanges during long tasks, and retry explicit direct-provider context-limit failures with a smaller history window.
+- Bound model-facing conversation history by size as well as message count, preserve both ends of oversized history entries, compact old direct-agent tool exchanges during long tasks, retry explicit direct-provider context-limit failures with a smaller history window, and quarantine malformed external history so one bad state file cannot permanently block a project session.
+- Preserve the end of long command logs, self-heal stale interrupted-task pointers, recognize structured Google session-expiry errors for automatic reauthentication, and reject unsafe project symlinks/junctions before transactional staging.
+- Prevent false failures after a successful project publication when external checkpoint cleanup fails, and bound oversized current prompts/text attachments plus inline PDF/image payloads in direct API mode before they can overflow the provider request.
+- Make project task checkpoint creation atomic so concurrent `antigyc` processes cannot both begin autonomous work against the same project state.
+- Reject missing CLI option values before they can consume a following flag, and report invalid auth/reasoning environment configuration directly instead of falling through to a misleading backend error.
+- Keep post-publication temporary manifest/staging cleanup best-effort so cleanup failures cannot report a successfully applied project change as a failed task.
 
 ## 0.1.1 - 2026-09-09
 

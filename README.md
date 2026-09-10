@@ -972,6 +972,10 @@ History stores user messages, final replies, timestamps, and attachment metadata
 
 Long conversations are bounded automatically. `antigyc` keeps up to the latest 200 saved messages for project history, but only a recent size-bounded subset is sent back to the model on each new request. Very long individual messages preserve both their beginning and ending, and direct API-key tasks compact older completed tool exchanges as whole call/response units. If the direct model explicitly rejects a request for exceeding its context/token limit, `antigyc` retries once with a smaller context window instead of immediately failing the session.
 
+If the external conversation-history JSON is ever corrupted, `antigyc` moves the invalid file aside with an `.invalid-...` suffix, reports the recovery path, and continues with a fresh history instead of becoming permanently unable to start in that project.
+
+Direct API-key mode also guards the current turn: extremely large typed prompts are rejected with an actionable size error before a provider request is sent, the combined prompt plus text/Office attachment context is bounded with attachment beginnings/endings preserved, and combined inline PDF/image data is capped before base64 expansion can create an oversized JSON request. The default Google subscription backend receives attachments by staged file path instead of inlining their full content into the wrapper request.
+
 ### Relocate external state
 
 Set `ANTIGRAVITY_HOME` before starting `antigyc`:
@@ -1025,9 +1029,13 @@ The staging changes are discarded. Ctrl+C propagates into provider/API requests 
 
 Before autonomous work begins, `antigyc` records a small project-scoped checkpoint outside the repository that points to the OS-temporary staged transaction. A normal success, handled failure, or Ctrl+C removes that checkpoint and staging directory. If the process is killed or crashes before cleanup runs, the checkpoint may remain. `antigyc resume` reopens that exact staged copy, verifies that the real project still matches the original baseline, and continues the original request; if the baseline changed, resume refuses to publish. `antigyc task clear` discards the interrupted state without touching the real project.
 
+Checkpoint creation is an atomic project-level claim. If another `antigyc` process starts autonomous work in the same project at the same time, only one task can claim the project; the other stops before model execution instead of racing on staged publication or conversation history.
+
 ### On concurrent external edits
 
 Before publishing a changed path, the wrapper verifies that the real path still matches the baseline captured at the beginning of the instruction. If another process changed that path, publication is refused instead of silently overwriting the external change.
+
+Project links are also checked before autonomous work starts. Absolute or external symbolic links in project content are rejected because following them could bypass the disposable staging copy. On Windows, project-content symbolic links/junctions are rejected up front when they cannot be reproduced with the same isolation guarantee. Dependency trees are handled separately: internal `node_modules` links are rewritten to the corresponding staged dependency target, preserving pnpm-style linked graphs without pointing back into the real project; dependency links that escape the project are rejected. Provider/runtime metadata directories such as `.gemini` and `.agents` are not copied into the task workspace.
 
 ### Rollback during publication
 
@@ -1204,7 +1212,7 @@ Expected failure behavior is conservative:
 - abnormal process termination -> staged work may remain resumable outside the project; a new task is blocked until `resume` or `task clear`;
 - command denial -> command is reported to the model as denied;
 - external concurrent edit to a path the agent wants to publish -> publication is refused;
-- invalid history JSON -> explicit history error rather than silently replacing it;
+- invalid history JSON -> the invalid external file is quarantined, its recovery path is reported, and the project continues with a fresh history;
 - no Git repository -> normal filesystem operation continues; Git-specific commands may simply report that Git is unavailable.
 
 ## Privacy and visibility boundaries
