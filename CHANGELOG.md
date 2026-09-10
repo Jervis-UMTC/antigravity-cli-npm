@@ -2,7 +2,7 @@
 
 All notable changes to the `antigyc` npm package are documented here.
 
-## Unreleased
+## 0.1.3 - 2026-09-10
 
 ### Changed
 

@@ -1,6 +1,6 @@
 {
   "name": "antigyc",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "A minimal CMD-style AI coding agent that works in the project where it is launched.",
   "type": "module",
   "bin": {

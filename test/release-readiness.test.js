@@ -12,7 +12,7 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
 test('release metadata is explicit and production files include hardening modules', async () => {
   const pkg = JSON.parse(await fs.readFile(path.join(ROOT, 'package.json'), 'utf8'));
   assert.equal(pkg.name, 'antigyc');
-  assert.equal(pkg.version, '0.1.2');
+  assert.equal(pkg.version, '0.1.3');
   assert.equal(pkg.license, 'MIT');
   assert.equal(pkg.publishConfig.access, 'public');
   assert.equal(pkg.repository.url, 'git+https://github.com/Jervis-UMTC/antigravity-cli-npm.git');
